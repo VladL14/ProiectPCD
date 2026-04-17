@@ -1,0 +1,11 @@
+FROM ubuntu:latest
+LABEL maintainer="vlad"
+WORKDIR /tmp
+
+RUN apt-get update && apt-get install -y \
+    python \
+    git \
+    nginx \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["/bin/bash"]
