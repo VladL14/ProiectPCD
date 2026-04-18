@@ -1,3 +1,4 @@
-/home/vlad/Documents/PCD/proiect/build/Release/CMakeFiles/app.dir
+/home/vlad/Documents/PCD/proiect/build/Release/CMakeFiles/server.dir
+/home/vlad/Documents/PCD/proiect/build/Release/CMakeFiles/client.dir
 /home/vlad/Documents/PCD/proiect/build/Release/CMakeFiles/edit_cache.dir
 /home/vlad/Documents/PCD/proiect/build/Release/CMakeFiles/rebuild_cache.dir

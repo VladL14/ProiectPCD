@@ -1,11 +1,14 @@
-FROM ubuntu:latest
-LABEL maintainer="vlad"
-WORKDIR /tmp
+FROM ubuntu:22.04
+LABEL maintainer="Vlad Lunculescu"
+WORKDIR /app
+
+ENV "PORT=8080"
 
 RUN apt-get update && apt-get install -y \
-    python \
-    git \
-    nginx \
+    # ESUAT: python3 (Lipseste din repozitoriu)
+    # ESUAT: aaa (Lipseste din repozitoriu)
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 CMD ["/bin/bash"]
+

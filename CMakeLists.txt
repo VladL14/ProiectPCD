@@ -7,7 +7,9 @@ find_package(libconfig REQUIRED)
 find_package(CURL REQUIRED)
 
 # Definim executabilul pentru demo
-add_executable(app app.c)
+add_executable(server server.c)
 
 # Legăm bibliotecile de executabil folosind alias-urile generate
-target_link_libraries(app PUBLIC libconfig::libconfig CURL::libcurl)
+target_link_libraries(server PUBLIC libconfig::libconfig CURL::libcurl)
+
+add_executable(client client.c)
