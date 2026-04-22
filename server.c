@@ -1,3 +1,12 @@
+/**
+ * Echipa 8
+ * IR3 2026
+ * Proiect PCD - Server
+ * Rezumat: server TCP cu multiplexare (poll) care primeste liste de dependinte
+ * de la clienti, le verifica online prin dual-API (repology + homebrew fallback)
+ * folosind procese fiu (fork + pipe), citeste configuratia din demo.cfg
+ * cu libconfig si genereaza un Dockerfile pe care il trimite inapoi clientului.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
