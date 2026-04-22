@@ -307,7 +307,8 @@ void process_request_and_send(int client_fd, char *request) {
                 
                 char version[64];
                 version[0] = '\0'; 
-                if(write(STDOUT_FILENO, "[MAP] Caut pachet prin intermediul curl\n", 28) < 0){
+                char *log_msg = "[MAP] Caut pachet prin intermediul curl\n";
+                if(write(STDOUT_FILENO, log_msg, custom_len(log_msg)) < 0){
                     perror("Eroare la cautare pachet");
                 }
                 if (check_via_repology(deps[i], version, sizeof(version))) {
@@ -327,10 +328,12 @@ void process_request_and_send(int client_fd, char *request) {
                     send(client_fd, " (homebrew)\n", 12, 0);
                 } 
                 else {
-                    // Nu este gasit, lasam un mesaj in dockerfile
-                    send(client_fd, "    # ESUAT: ", 13, 0);
+                    // Nu este gasit, folosim custom_len sa nu mai trunchiem textul
+                    char *fail_start = "    # ESUAT: ";
+                    char *fail_end = " (Lipseste de pe sursele verificate)\n";
+                    send(client_fd, fail_start, custom_len(fail_start), 0);
                     send(client_fd, deps[i], custom_len(deps[i]), 0);
-                    send(client_fd, " (Lipseste de pe sursele verificate)\n", 22, 0);
+                    send(client_fd, fail_end, custom_len(fail_end), 0);
                 }
                 
                 exit(0); // copilul si-a incheiat munca
@@ -339,6 +342,7 @@ void process_request_and_send(int client_fd, char *request) {
             // parintele asteapta primul copil sa dea search sa scrie in socket, pe al doilea la fel si tot asa
             int status;
             waitpid(pid, &status, 0); 
+            sleep(1); // Pauza obligatorie ca sa nu primim Rate Limit (429) de la Repology
         }
         
         // Toti copiii au terminat
