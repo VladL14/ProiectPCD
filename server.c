@@ -1,64 +1,64 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <curl/curl.h>
-#include <libconfig.h>
-#include <string.h>
+/**
+ * P8
+ * Proiect PCD - Dockerfile Generator (Server)
+ * Aici avem implementarea unui server TCP care primeste comenzi de la un client (dependinte, variabile de mediu, fisiere de copiat) si asambleaza un Dockerfile.
+ * Ne folosim de fork() pentru a crea un proces copil pentru fiecare pachet cerut, fiii folosesc doua api uri (repology si fallback -> homebrew) folosind libcurl ca sa verifice existenta dependintei dorite impreuna cu versiunea. la cererea clientului de a pune in dockerfile dependinte variabile de mediu sau fisiere de copy, programul verifica existenata dependintelor, iar daca exista pune sursa si versiunea acesteia, plus celelalte lucruri hardcodate by default clasice unui dockerfile.
+ */
 
-#define MAX_CLIENTS 10
+#include <stdio.h>       // print, perror
+#include <stdlib.h>      // exit()
+#include <string.h>      // strcmp, strtok, strstr
+#include <unistd.h>      // read, write, close
+#include <fcntl.h>       // o_rdonly, o_wronly, o_creat, o_trunc
+#include <sys/wait.h>    // waitpid, WIFEXITED
+#include <sys/socket.h>  // socket, bind, listen, accept, send, recv
+#include <netinet/in.h>  // pentru structurile de ip si porturi
+#include <curl/curl.h>   // libraria externa cu care luam json ul de pe internet
+#include <libconfig.h>   // libraria cu care citim cfg ul de baza al serverului
+
 #define PORT 8080
 #define CURL_BUFFER_SIZE 8192
 
-// Functie utilitara pentru a evita strlen
+// functie ca sa inlocuim strlen
 size_t custom_len(const char *str) {
     size_t i = 0;
     while (str[i] != '\0') i++;
     return i;
 }
 
-//struct care defineste un buffer dinamic in care se acumuleaza raspunsurile HTTP
-//necesar pentru parsarea JSON ului returnat de API
+// structura in care lipim bucatile de json venite de pe net
 typedef struct {
     char data[CURL_BUFFER_SIZE];
     size_t len;
 } CurlBuffer;
 
-//nu se poate extrage versiunea fara sa accesam JSON ul
-// Functie dummy pentru a impiedica libcurl sa afiseze JSON-ul descarcat pe ecran
+// functie dummy cand tragem ceva cu curl by default vrea sa printeze pe ecran, noi ii dam functia asta ca sa o opreasca
 size_t curl_dummy_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
     return size * nmemb; 
 }
 
-//callback pentur libcurl
-//copiere date in buffer
+// functia apelata de curl ca sa ne bage datele de pe net in bufferul nostru
 size_t curl_write_buffer(void *ptr, size_t size, size_t nmemb, void *userdata) {
     CurlBuffer *buf = (CurlBuffer *)userdata;
     size_t incoming = size * nmemb;
  
-    ///protectie buffer overflow 
+    // verificam sa nu crape daca vine un fisier prea mare
     if (buf->len + incoming >= sizeof(buf->data) - 1)
         incoming = sizeof(buf->data) - 1 - buf->len;
  
-    int i;
-    for (i = 0; i < (int)incoming; i++)
+    for (int i = 0; i < (int)incoming; i++)
         buf->data[buf->len + i] = ((char *)ptr)[i];
  
     buf->len += incoming;
     buf->data[buf->len] = '\0';
-    return size * nmemb; // returnam size*nmemb, altfel curl semnaleaza eroare 
+    return size * nmemb; 
 }
 
+// parsare simpla de json de mana. gasim cuvantul "key" si luam ce e in ghilimele la valoare
 int extract_json_string(const char *json, const char *key, char *out, size_t out_sz) {
-    // Construim pattern-ul key : value
     char pattern[128];
     pattern[0] = '"';
-    int pi = 1;
-    int ki = 0;
+    int pi = 1, ki = 0;
     while (key[ki] && pi < 126) pattern[pi++] = key[ki++];
     pattern[pi++] = '"';
     pattern[pi] = '\0';
@@ -66,127 +66,97 @@ int extract_json_string(const char *json, const char *key, char *out, size_t out
     const char *pos = strstr(json, pattern);
     if (!pos) return 0;
  
-    pos += pi; //sarim peste key
+    pos += pi; // sarim peste cheie
+    while (*pos == ' ' || *pos == ':') pos++; // sarim peste : si spatii
+    if (*pos != '"') return 0; 
+    pos++; 
  
-    //sarim spatii si ':' 
-    while (*pos == ' ' || *pos == ':') pos++;
- 
-    if (*pos != '"') return 0; //valoarea nu e string 
-    pos++; //sarim ghilimelele de deschidere 
- 
-    size_t i = 0;
-    while (*pos && *pos != '"' && i < out_sz - 1)
-        out[i++] = *pos++;
+    size_t i = 0; // tragem litera cu litera pana la urmatoarele ghilimele
+    while (*pos && *pos != '"' && i < out_sz - 1) out[i++] = *pos++;
     out[i] = '\0';
  
     return (i > 0) ? 1 : 0;
 }
 
-/*
-   Strategie dual-API cu fallback:
-   
-   1. PRIMARY: repology.org/api/v1/project/<pkg>
-      - Acoperire nativa Ubuntu/Debian/Alpine (relevante pentru Dockerfile)
-      - Returneaza JSON cu toate versiunile disponibile pe toate distro-urile
-      - Extragem "newest_version" pentru a o include in Dockerfile 
-   
-   2. FALLBACK: formulae.brew.sh/api/formula/<pkg>.json
-      - Folosit daca repology nu gaseste pachetul
-      - Acoperire buna pentru tool-uri de development (cmake, openssl, etc.)
-      - Extragem versiunea din campul "versions.stable"
-   
-   De ce dual-API si nu doar unul?
-   - Proiectul genereaza Dockerfiles bazate pe apt-get (Ubuntu/Debian)
-   - Homebrew este specific macOS si nu reflecta ce exista in apt
-   - repology agrega surse Linux si fallback-ul pe Homebrew prinde restul
-*/
-
-//struct rezultat returnata de procesul fiu parintelui prin pipe
-//dimensiune fixa = un singur write() atomic (<= PIPE_BUF = 4096 pe Linux
+// asta lasa fiul parintelui in fisierul temporar
 typedef struct {
-    int  valid;        // 1 = pachet gasit, 0 = nu exista 
-    char version[64];  //  versiunea cea mai noua gasita / "" daca nu stim 
-    char source[32];   //"repology" / "homebrew" / "not found" 
+    int  valid;        // 1=gasit, 0=nu
+    char version[64];  // versiunea gasita pe net
+    char source[32];   // repology sau homebrew
 } DepResult;
 
-//verificare via repology
+// prima data verificam pe repology 
 static int check_via_repology(const char *pkg, char *version, size_t vsz) {
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
- 
-    // Construim URL manual: https://repology.org/api/v1/project/<pkg> 
+    // asamblam url ul manual ca sa evitam sprintf, ui tine evidenta la ce caracter am ajuns in url, iar pi parcurge literele pachetului
     char url[512];
     int ui = 0;
     const char *base = "https://repology.org/api/v1/project/";
-    while (*base && ui < 480) url[ui++] = *base++;
+    while (*base && ui < 480) url[ui++] = *base++; // copiem adresa de baza
+    
     int pi = 0;
-    while (pkg[pi] && ui < 505) url[ui++] = pkg[pi++];
+    while (pkg[pi] && ui < 505) url[ui++] = pkg[pi++]; // lipim numele pachetului la final
     url[ui] = '\0';
  
+    // pregatim un buffer in care sa ne puna curl datele cand le primeste de pe net
     CurlBuffer buf;
-    buf.len = 0;
+    buf.len = 0; 
     buf.data[0] = '\0';
  
-    curl_easy_setopt(curl, CURLOPT_URL, url);
+    // setarile esentiale pentru curl
+    curl_easy_setopt(curl, CURLOPT_URL, url); // ii spunem pe ce link sa intre
+    
+    // by default curl printeaza tot ce descarca direct in consola, noi nu vrem asta pt ca ne umple ecranul de json, asa ca ii dam functia curl_write_buffer care stie cum sa preia bucatile de date si ii dam adresa buffer ului unde sa le puna.
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_buffer);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0 (demo academic)");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L); // timeout 8s per verificare 
- 
-    CURLcode res = curl_easy_perform(curl);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // daca site ul ne da redirect, mergem dupa el
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0"); // ne identificam ca useri sa nu se blocheze ca pentru boti
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L); // maxim 8 secunde sa ne raspunda altfel renuntam
+    CURLcode res = curl_easy_perform(curl); // dam cererea pe retea
     long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code); // luam codul http(succes, esec)
     curl_easy_cleanup(curl);
-
-    char debug_msg[256];
-    int di = 0;
-    const char *dp = "[DEBUG repology] ";
-    while(dp[di]) debug_msg[di] = dp[di++];
-    int bi = 0;
-    while(buf.data[bi] && bi < 200) debug_msg[di++] = buf.data[bi++];
-    debug_msg[di++] = '\n';
-    write(STDOUT_FILENO, debug_msg, di);
  
-    if (res != CURLE_OK || http_code != 200) return 0;
-    if (buf.len < 5) return 0; // raspuns gol = pachet inexistent 
+    if (res != CURLE_OK || http_code != 200) return 0; // nu s a putut realiza cautarea sau pachetul nu exista
+    if (buf.len < 5) return 0; 
  
-    //Repology returneaza un array JSON; daca e "[]" = nu exista 
+    // pe repology daca nu exista pachetul iti returneaza in loc de eroare un array gol 
     if (buf.data[0] == '[' && buf.data[1] == ']') return 0;
- 
     
-    //Extragem "newest_version" din primul obiect din array 
+    // tragem direct versiunea in variabila pe care o intoarcem
     extract_json_string(buf.data, "version", version, vsz);
- 
     return 1;
 }
 
-//verificare via homebrew
+//  fallback cauta pe homebrew pachetele generice de dev
 static int check_via_homebrew(const char *pkg, char *version, size_t vsz) {
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
- 
+    // la fel ca sus asamblam manual linkul din bucati ui pentru url index, pi pt package index si ei pt extension index
     char url[512];
     int ui = 0;
     const char *base = "https://formulae.brew.sh/api/formula/";
     while (*base && ui < 470) url[ui++] = *base++;
+    
     int pi = 0;
     while (pkg[pi] && ui < 500) url[ui++] = pkg[pi++];
-    // adaugam .json 
-    const char *ext = ".json";
+    
+    const char *ext = ".json"; // homebrew cere neaparat sa pui .json la finalul url ului
     int ei = 0;
     while (ext[ei]) url[ui++] = ext[ei++];
     url[ui] = '\0';
  
     CurlBuffer buf;
-    buf.len = 0;
+    buf.len = 0; 
     buf.data[0] = '\0';
  
+    // aceleasi setari de curl, le facem sa scrie in structura noastra si nu pe ecran
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_buffer);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0 (demo academic)");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
  
     CURLcode res = curl_easy_perform(curl);
@@ -196,248 +166,107 @@ static int check_via_homebrew(const char *pkg, char *version, size_t vsz) {
  
     if (res != CURLE_OK || http_code != 200) return 0;
  
-    // Homebrew: versiunea e in "versions":{"stable":"X.Y.Z"} 
-    // Cautam "stable" in contextul "versions" */
+    // homebrew are json ul diferit, gasim intai sectiunea cu stable si de acolo luam versiunea
     const char *ver_section = strstr(buf.data, "\"versions\"");
     if (ver_section) {
         extract_json_string(ver_section, "stable", version, vsz);
     }
- 
     return 1;
 }
 
-
-//ruleaza in procesul fiu si returneaza DepResult printr un pipe
-static void child_check_dep(const char *dep_name, int pipe_fd) {
-    DepResult result;
-    result.valid = 0;
-    result.version[0] = '\0';
-    result.source[0] = '\0';
+// functia in care copilul pune mana la treaba. Incearca primul api si apoi pica pe al doilea daca e nevoie
+static void child_check_dep(const char *dep_name, DepResult *res) {
+    res->valid = 0;
+    res->version[0] = '\0';
+    res->source[0] = '\0';
  
-    //Mesaj log asamblat atomic (evitam interleaving pe stdout cu alte procese) 
+    // facem un mesaj de log in memorie
     char log[256];
     int li = 0;
     const char *pre = "[MAP] Verific: ";
-    int i = 0;
-    while (pre[i]) log[li++] = pre[i++];
-    i = 0;
-    while (dep_name[i]) log[li++] = dep_name[i++];
+    int i = 0; while (pre[i]) log[li++] = pre[i++];
+    i = 0; while (dep_name[i]) log[li++] = dep_name[i++];
+    log[li++] = '\n';
+    write(STDOUT_FILENO, log, li); // afisam un singur mesaj pe ecran
  
-    //Incearca repology
-    if (check_via_repology(dep_name, result.version, sizeof(result.version))) {
-        result.valid = 1;
+    if (check_via_repology(dep_name, res->version, sizeof(res->version))) {
+        res->valid = 1;
         const char *src = "repology";
-        i = 0;
-        while (src[i]) result.source[i] = src[i++];
-        result.source[i] = '\0';
- 
-        const char *ok = " -> OK (repology) v";
-        i = 0; while (ok[i]) log[li++] = ok[i++];
-        i = 0; while (result.version[i]) log[li++] = result.version[i++];
-        log[li++] = '\n';
-        write(STDOUT_FILENO, log, li);
+        i = 0; while (src[i]) res->source[i] = src[i++];
+        res->source[i] = '\0';
     }
-    //Fallback homebrew
-    else if (check_via_homebrew(dep_name, result.version, sizeof(result.version))) {
-        result.valid = 1;
+    else if (check_via_homebrew(dep_name, res->version, sizeof(res->version))) {
+        res->valid = 1;
         const char *src = "homebrew";
-        i = 0;
-        while (src[i]) result.source[i] = src[i++];
-        result.source[i] = '\0';
- 
-        const char *ok = " -> OK (homebrew fallback) v";
-        i = 0; while (ok[i]) log[li++] = ok[i++];
-        i = 0; while (result.version[i]) log[li++] = result.version[i++];
-        log[li++] = '\n';
-        write(STDOUT_FILENO, log, li);
+        i = 0; while (src[i]) res->source[i] = src[i++];
+        res->source[i] = '\0';
     }
-    //Esec total
-    else {
-        const char *src = "not found";
-        i = 0;
-        while (src[i]) result.source[i] = src[i++];
-        result.source[i] = '\0';
- 
-        const char *err = " -> ESUAT (404 pe ambele API-uri)\n";
-        i = 0; while (err[i]) log[li++] = err[i++];
-        write(STDOUT_FILENO, log, li);
-    }
- 
-    // Trimitem struct-ul rezultat parintelui prin pipe 
-    write(pipe_fd, &result, sizeof(DepResult));
-    close(pipe_fd);
 }
 
-
-
-/* --- 1. VERIFICAREA PACHETELOR (MAP) --- */
-int check_dependency_online(const char *dep_name) {
-    CURL *curl;
-    CURLcode res;
-    long response_code = 0;
-    int success = 0;
-
-    char url[512];
-    for (int k = 0; k < 512; k++) url[k] = '\0'; 
-
-    // Folosim API-ul Homebrew: este ultra-rapid si returneaza 404 real daca pachetul nu exista
-    const char *base = "https://formulae.brew.sh/api/formula/";
-    size_t i = 0;
-    while (base[i] != '\0' && i < sizeof(url) - 6) {
-        url[i] = base[i];
-        i++;
-    }
-    size_t j = 0;
-    while (dep_name[j] != '\0' && i < sizeof(url) - 6) {
-        url[i++] = dep_name[j++];
-    }
-    
-    // Adaugam extensia .json
-    char *ext = ".json";
-    int e = 0;
-    while(ext[e] != '\0') url[i++] = ext[e++];
-
-    curl = curl_easy_init();
-    if(curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_dummy_write); // Ascundem output-ul
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0");
-
-        res = curl_easy_perform(curl);
-        if(res == CURLE_OK) {
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-            if (response_code == 200) success = 1; // Pachet valid!
-        }
-        curl_easy_cleanup(curl);
-    }
-    return success; 
-}
-
-/* --- 2. LOGICA CENTRALA DE PROCESARE A CERERII --- */
+// aici centralizam toata logica dupa ce a venit request ul pe socket
 void process_request_and_send(int client_fd, char *request) {
     char deps[10][64];  int dep_count = 0;
     char envs[10][64];  int env_count = 0;
     char copies[10][64]; int copy_count = 0;
 
-    // Resetare matrici manual
+    // resetam matricea la fiecare request sa nu amestecam ce ne cere clientul
     for (int i = 0; i < 10; i++) {
         for (int j = 0; j < 64; j++) {
             deps[i][j] = '\0'; envs[i][j] = '\0'; copies[i][j] = '\0';
         }
     }
 
-    // PASUL 2A: PARSAREA
-    size_t req_idx = 0;
-    while (request[req_idx] != '\0') {
-        while (request[req_idx] == ' ') req_idx++; 
-        if (request[req_idx] == '\0') break;
-
-        char type = request[req_idx]; 
-        if (request[req_idx + 1] == ':') {
-            req_idx += 2; 
-            size_t char_idx = 0;
-            
-            while (request[req_idx] != ' ' && request[req_idx] != '\0' && char_idx < 63) {
-                if (type == 'D' && dep_count < 10) deps[dep_count][char_idx++] = request[req_idx];
-                else if (type == 'E' && env_count < 10) envs[env_count][char_idx++] = request[req_idx];
-                else if (type == 'C' && copy_count < 10) {
-                    if (request[req_idx] == ',') copies[copy_count][char_idx++] = ' '; 
-                    else copies[copy_count][char_idx++] = request[req_idx];
+    // impartim bufferul primit folosind strtok 
+    char *token = strtok(request, " ");
+    while (token != NULL) {
+        // Daca incepe cu D: stim ca e dependinta
+        if (token[0] == 'D' && token[1] == ':') {
+            if (dep_count < 10) {
+                int j = 0;
+                // copiem litera cu litera incepem de la token[j + 2] pentru ca vrem sa sarim peste d si :
+                while (token[j + 2] != '\0' && j < 63) { 
+                    deps[dep_count][j] = token[j + 2]; 
+                    j++; 
                 }
-                req_idx++;
+                deps[dep_count][j] = '\0'; 
+                dep_count++;
             }
-            if (type == 'D' && dep_count < 10) dep_count++;
-            if (type == 'E' && env_count < 10) env_count++;
-            if (type == 'C' && copy_count < 10) copy_count++;
-        } else {
-            while (request[req_idx] != ' ' && request[req_idx] != '\0') req_idx++;
-        }
-    }
-
-    // PASUL 2B: MAP-REDUCE (Paralelizare)
-    pid_t pids[10];
-    int valid_deps[10] = {0};
-    int pipe_fds[10][2]; //[i][0]=citire(parinte), [i][1]=scriere(fiu)
-    DepResult results[10];
-
-    for (int i = 0; i < 10; i++) {
-        results[i].valid      = 0;
-        results[i].version[0] = '\0';
-        results[i].source[0]  = '\0';
-        pipe_fds[i][0] = pipe_fds[i][1] = -1;
-    }
-
-    // MAP: Fiii fac verificarea online
-    /*for (int i = 0; i < dep_count; i++) {
-        pids[i] = fork();
-        if (pids[i] == 0) {
-            // Asamblam mesajul complet in memorie pentru un singur apel write()
-            // Acest lucru previne "Race Conditions" pe consola (ex: litere amestecate)
-            char msg_buf[256];
-            for (int k = 0; k < 256; k++) msg_buf[k] = '\0';
-            
-            char *prefix = "[MAP] Verific pachet: ";
-            size_t idx = 0;
-            while(prefix[idx]) { msg_buf[idx] = prefix[idx]; idx++; }
-            
-            size_t d_idx = 0;
-            while(deps[i][d_idx]) { msg_buf[idx++] = deps[i][d_idx++]; }
-            
-            int is_valid = check_dependency_online(deps[i]); 
-            
-            if(is_valid) {
-                char *res_ok = " -> EXISTĂ (200 OK)\n";
-                int r = 0; while(res_ok[r]) { msg_buf[idx++] = res_ok[r++]; }
-                write(STDOUT_FILENO, msg_buf, idx);
-                exit(0); 
-            } else {
-                char *res_err = " -> EȘUAT (404 Not Found)\n";
-                int r = 0; while(res_err[r]) { msg_buf[idx++] = res_err[r++]; }
-                write(STDOUT_FILENO, msg_buf, idx);
-                exit(1); 
+        } 
+        // Daca incepe cu E: e o variabila de mediu 
+        else if (token[0] == 'E' && token[1] == ':') {
+            if (env_count < 10) {
+                int j = 0;
+                // sarim la fel peste cele 2 litere prefixate si ne protejam la 63 de caractere max
+                while (token[j + 2] != '\0' && j < 63) { 
+                    envs[env_count][j] = token[j + 2]; 
+                    j++; 
+                }
+                envs[env_count][j] = '\0'; 
+                env_count++;
+            }
+        } 
+        // Daca incepe cu C: este o comanda de copy
+        else if (token[0] == 'C' && token[1] == ':') {
+            if (copy_count < 10) {
+                int j = 0;
+                while (token[j + 2] != '\0' && j < 63) {//la fel si la copy
+                    copies[copy_count][j] = token[j + 2];
+                    j++;
+                }
+                copies[copy_count][j] = '\0'; 
+                copy_count++;
             }
         }
-    }*/
-    // MAP: cream cate un fiu per dependinta 
-    for (int i = 0; i < dep_count; i++) {
-        if (pipe(pipe_fds[i]) < 0) { pids[i] = -1; continue; }
- 
-        pids[i] = fork();
-        if (pids[i] == 0) {
-            //fiul
-            close(pipe_fds[i][0]); //fiul nu citeste din pipe 
-            child_check_dep(deps[i], pipe_fds[i][1]);
-            exit(0); //exit code nu mai conteaza, datele sunt in pipe 
-        } else {
-            //parintele
-            close(pipe_fds[i][1]); //parintele nu scrie in pipe 
-        }
+        token = strtok(NULL, " "); // trecem la urmatorul argument impachetat in mesajul clientului
     }
 
-
-    // REDUCE: Parintele asteapta copiii
-    for (int i = 0; i < dep_count; i++) {
-        //mut declaratia asta in if int status;
-        if (pids[i] > 0) {
-            int status;
-            waitpid(pids[i], &status, 0);
-            /*if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                valid_deps[i] = 1; 
-            }*/
-            ssize_t rd = read(pipe_fds[i][0], &results[i], sizeof(DepResult));
-            if (rd != sizeof(DepResult)) results[i].valid = 0; 
-            close(pipe_fds[i][0]);
-        }
-    }
-
-    // PASUL 2C: CITIRE CONFIGURATIE (libconfig)
+    // folosim libconfig ca sa parsam valorile default scrise in cfg
     config_t cfg;
     config_init(&cfg);
 
-    const char *base_image = "ubuntu:latest";
-    const char *maintainer = "necunoscut";
-    const char *workdir = "/tmp";
+    const char *base_image = "ubuntu:22.04";
+    const char *maintainer = "admin";
+    const char *workdir = "/app";
 
     if (config_read_file(&cfg, "demo.cfg")) {
         config_lookup_string(&cfg, "container.base_image", &base_image);
@@ -445,7 +274,7 @@ void process_request_and_send(int client_fd, char *request) {
         config_lookup_string(&cfg, "container.workdir", &workdir);
     }
 
-    // PASUL 2D: ASAMBLAREA DOCKERFILE-ULUI
+    // de aici in jos incepem sa construim efectiv fisierul si sa turnam pe socket la client liniile, rand pe rand
     send(client_fd, "FROM ", 5, 0);
     send(client_fd, base_image, custom_len(base_image), 0);
     send(client_fd, "\nLABEL maintainer=\"", 19, 0);
@@ -455,48 +284,64 @@ void process_request_and_send(int client_fd, char *request) {
     send(client_fd, "\n\n", 2, 0);
 
     for (int i = 0; i < env_count; i++) {
-        send(client_fd, "ENV ", 4, 0);
-        send(client_fd, envs[i], custom_len(envs[i]), 0);
+        send(client_fd, "ENV ", 4, 0); send(client_fd, envs[i], custom_len(envs[i]), 0);
         send(client_fd, "\n", 1, 0);
     }
     if (env_count > 0) send(client_fd, "\n", 1, 0);
 
     for (int i = 0; i < copy_count; i++) {
-        send(client_fd, "COPY ", 5, 0);
-        send(client_fd, copies[i], custom_len(copies[i]), 0);
+        send(client_fd, "COPY ", 5, 0); send(client_fd, copies[i], custom_len(copies[i]), 0);
         send(client_fd, "\n", 1, 0);
     }
     if (copy_count > 0) send(client_fd, "\n", 1, 0);
 
     if (dep_count > 0) {
-        char *run_start = "RUN apt-get update && apt-get install -y \\\n";
-        send(client_fd, run_start, custom_len(run_start), 0);
+        char *run_start = "RUN apt-get update && apt-get install -y \\\n";//asamblam efectiv fisierul
+        send(client_fd, run_start, custom_len(run_start), 0); 
         
         for (int i = 0; i < dep_count; i++) {
-            if (results[i].valid) { 
-                send(client_fd, "    ", 4, 0);
-                send(client_fd, deps[i], custom_len(deps[i]), 0);
-                if (results[i].version[0] != '\0') {
-                    char ver_comment[128];
-                    // construim " \  # v<version> (<source>)\n" 
-                    int vi = 0;
-                    const char *p1 = " \\  # v";
-                    int k = 0; while (p1[k]) ver_comment[vi++] = p1[k++];
-                    k = 0; while (results[i].version[k]) ver_comment[vi++] = results[i].version[k++];
-                    ver_comment[vi++] = ' '; ver_comment[vi++] = '(';
-                    k = 0; while (results[i].source[k]) ver_comment[vi++] = results[i].source[k++];
-                    ver_comment[vi++] = ')'; ver_comment[vi++] = '\n';
-                    ver_comment[vi] = '\0';
-                    send(client_fd, ver_comment, vi, 0);
-                } else {
-                    send(client_fd, " \\\n", 3, 0);
+            
+            pid_t pid = fork(); // cream copilul pt pachetul curent
+            
+            if (pid == 0) {
+                
+                char version[64];
+                version[0] = '\0'; 
+                if(write(STDOUT_FILENO, "[MAP] Caut pachet prin intermediul curl\n", 28) < 0){
+                    perror("Eroare la cautare pachet");
                 }
-            } else {
-                send(client_fd, "    # ESUAT: ", 13, 0);
-                send(client_fd, deps[i], custom_len(deps[i]), 0);
-                send(client_fd, " (Lipseste din repozitoriu)\n", 28, 0);
+                if (check_via_repology(deps[i], version, sizeof(version))) {
+                    // Pachet gasit pe prima varianta, dam send urile ca sa construim linia de genul: "   curl \  # v8.5.0 (repology)"
+                    send(client_fd, "    ", 4, 0);
+                    send(client_fd, deps[i], custom_len(deps[i]), 0);
+                    send(client_fd, " \\  # v", 7, 0);
+                    send(client_fd, version, custom_len(version), 0);
+                    send(client_fd, " (repology)\n", 12, 0);
+                } 
+                else if (check_via_homebrew(deps[i], version, sizeof(version))) {
+                    // Gasit pe a doua varianta
+                    send(client_fd, "    ", 4, 0);
+                    send(client_fd, deps[i], custom_len(deps[i]), 0);
+                    send(client_fd, " \\  # v", 7, 0);
+                    send(client_fd, version, custom_len(version), 0);
+                    send(client_fd, " (homebrew)\n", 12, 0);
+                } 
+                else {
+                    // Nu este gasit, lasam un mesaj in dockerfile
+                    send(client_fd, "    # ESUAT: ", 13, 0);
+                    send(client_fd, deps[i], custom_len(deps[i]), 0);
+                    send(client_fd, " (Lipseste de pe sursele verificate)\n", 22, 0);
+                }
+                
+                exit(0); // copilul si-a incheiat munca
             }
+            
+            // parintele asteapta primul copil sa dea search sa scrie in socket, pe al doilea la fel si tot asa
+            int status;
+            waitpid(pid, &status, 0); 
         }
+        
+        // Toti copiii au terminat
         char *run_end = "    && apt-get clean \\\n    && rm -rf /var/lib/apt/lists/*\n\n";
         send(client_fd, run_end, custom_len(run_end), 0);
     }
@@ -504,85 +349,64 @@ void process_request_and_send(int client_fd, char *request) {
     char *footer = "CMD [\"/bin/bash\"]\n";
     send(client_fd, footer, custom_len(footer), 0);
 
-    // Marker-ul pentru a spune clientului ca s-a terminat fisierul
+    // Daca am inchide conexiunea, terminalul clientului ar crapa si ar iesi din acesta asa ca lasam socketul deschis si trimitem un string de referinta pentru a stii cand s a terminat construirea dockerfile ului
     char *eof_marker = "\n===EOF===\n";
     send(client_fd, eof_marker, custom_len(eof_marker), 0);
 
-    config_destroy(&cfg);
+    config_destroy(&cfg); // curatenie de memorie
 }
 
-/* --- 3. SERVERUL PRINCIPAL --- */
 int main() {
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        perror("Eroare socket"); return 1; 
-    }
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); 
-
+    // initializam serverul tcp, cod folosit si la teme anterioare
+    int server_fd, client_fd;
     struct sockaddr_in address;
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY; 
-    address.sin_port = htons(8080);
-    for (int i = 0; i < 8; i++) address.sin_zero[i] = '\0';
+    int opt = 1;
+    socklen_t addrlen = sizeof(address);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Eroare la bind");
-        return 1;
-    }
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) return 1;
+    
+    // reuseaddr ne scapa de erorile in care portul 8080 ramane blocat cand oprim brusc programul
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    listen(server_fd, 5); 
-    curl_global_init(CURL_GLOBAL_DEFAULT); 
+    address.sin_family = AF_INET; //adresa ipv4
+    address.sin_addr.s_addr = INADDR_ANY;//poate primi de la orice adresa
+    address.sin_port = htons(PORT);//htons transforma din int in limbaj de retea
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) return 1;
+    
+    // pornim si asteptam o posibila coada mica de 1 om
+    listen(server_fd, 1);
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);//initializam curl
     
     char msg_start[] = "[Server] Ascult pe port 8080...\n";
-    write(STDOUT_FILENO, msg_start, custom_len(msg_start));
-
-    // MULTIPLEXARE
-    struct pollfd fds[MAX_CLIENTS];
-    for (int i = 0; i < MAX_CLIENTS; i++) fds[i].fd = -1; 
-    
-    fds[0].fd = server_fd; 
-    fds[0].events = POLLIN;
-
+    if (write(STDOUT_FILENO, msg_start, custom_len(msg_start)) < 0) {
+        perror("Eroare la pornire");
+    }
     while (1) {
-        int ready = poll(fds, MAX_CLIENTS, -1); 
-        if (ready < 0) break;
+        client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen);//acceptam conexiunea de la client
+        if (client_fd < 0) continue;
 
-        // Conexiune noua
-        if (fds[0].revents & POLLIN) {
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+        if (write(STDOUT_FILENO, "[Server] Client conectat!\n", 26) < 0) {
+            perror("Eroare la afisare conectare");
+        }
+
+        while (1) {//in aceasta bucla primim comenziile clientului
+            char buffer[1024];
+            for (int i = 0; i < 1024; i++) buffer[i] = '\0';
             
-            if (new_socket >= 0) {
-                write(STDOUT_FILENO, "[Server] Client nou conectat.\n", 30);
-                for (int i = 1; i < MAX_CLIENTS; i++) {
-                    if (fds[i].fd < 0) {
-                        fds[i].fd = new_socket;
-                        fds[i].events = POLLIN;
-                        break;
-                    }
+            ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+            
+            if (bytes_read <= 0) {
+                if (write(STDOUT_FILENO, "[Server] Client deconectat.\n", 28) < 0) {
+                    perror("Eroare la afisare deconectare");
                 }
+                break; 
             }
+            
+            process_request_and_send(client_fd, buffer);//construim efectiv dockerfile ul
         }
-
-        // Citire date de la clientii conectati
-        for (int i = 1; i < MAX_CLIENTS; i++) {
-            if (fds[i].fd > 0 && (fds[i].revents & POLLIN)) {
-                char buffer[1024];
-                for (int j = 0; j < 1024; j++) buffer[j] = '\0';
-
-                ssize_t bytes_read = recv(fds[i].fd, buffer, sizeof(buffer) - 1, 0);
-                
-                if (bytes_read <= 0) {
-                    write(STDOUT_FILENO, "[Server] Client deconectat.\n", 28);
-                    close(fds[i].fd);
-                    fds[i].fd = -1; 
-                } else {
-                    process_request_and_send(fds[i].fd, buffer);
-                }
-            }
-        }
+        close(client_fd);
     }
 
     close(server_fd);

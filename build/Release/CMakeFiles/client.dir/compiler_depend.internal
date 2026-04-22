@@ -13,7 +13,6 @@ CMakeFiles/client.dir/client.c.o
  /usr/include/fcntl.h
  /usr/include/features-time64.h
  /usr/include/features.h
- /usr/include/getopt.h
  /usr/include/linux/posix_types.h
  /usr/include/linux/stddef.h
  /usr/include/netinet/in.h
@@ -40,7 +39,6 @@ CMakeFiles/client.dir/client.c.o
  /usr/include/x86_64-linux-gnu/bits/floatn-common.h
  /usr/include/x86_64-linux-gnu/bits/floatn.h
  /usr/include/x86_64-linux-gnu/bits/getopt_core.h
- /usr/include/x86_64-linux-gnu/bits/getopt_ext.h
  /usr/include/x86_64-linux-gnu/bits/getopt_posix.h
  /usr/include/x86_64-linux-gnu/bits/in.h
  /usr/include/x86_64-linux-gnu/bits/libc-header-start.h

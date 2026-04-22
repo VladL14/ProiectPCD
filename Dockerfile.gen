@@ -2,9 +2,11 @@ FROM ubuntu:22.04
 LABEL maintainer="Vlad Lunculescu"
 WORKDIR /app
 
+ENV "aaa"
+
 RUN apt-get update && apt-get install -y \
-    curl \  # v7.33.0 ()
-    && apt-get clean \
+    curl \  # v8.19.0 (repology)
+    # ESUAT: abccdsadsa (Lipseste de pe surse    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 CMD ["/bin/bash"]

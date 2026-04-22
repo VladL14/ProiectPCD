@@ -1,0 +1,5 @@
+build/
+client
+server
+Dockerfile.gen
+test.Dockfile
