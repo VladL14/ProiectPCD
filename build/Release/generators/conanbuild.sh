@@ -1,1 +1,0 @@
-. "/home/vlad/Documents/PCD/proiect/build/Release/generators/conanbuildenv-release-x86_64.sh"
