@@ -79,6 +79,7 @@ int main() {
     for (int i = 0; i < 8; i++) server_addr.sin_zero[i] = '\0'; // Curatam restul structurii
 
     // Incercam sa stabilim conexiunea cu serverul
+    printf("[DEBUG] Clientul incearca sa se conecteze la portul: %d\n", port);
     if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Conexiune la server esuata");
         close(sockfd);
@@ -213,3 +214,19 @@ int main() {
     close(sockfd);
     return 0;
 }
+
+/*
+exemplu de rulare:
+lex@alex-LOQ-15IRX9:~/PCD/proiectpcd$ build/Release/client
+[DEBUG] Clientul incearca sa se conecteze la portul: 9090
+[Client] Conectat cu succes la server.
+comanda:> --dep gcc --dep cmake --dep make --copy server.c --copy client.c --out Dockerfile.c_build
+[Client] Dockerfile primit si asamblat cu succes.
+comanda:> --dep linux_kernel_fals_123 --dep pachet_inventat --out Dockerfile.fail
+[Client] Dockerfile primit si asamblat cu succes.
+comanda:> --dep pip --env FLASK_PORT=5000 --env FLASK_ENV=production --copy app.py --out Dockerfile.test
+[Client] Dockerfile primit si asamblat cu succes.
+comanda:> quit
+Comanda invalida/goala. In cazul in care doriti sa generati un Dockerfile, se recomanda folosirea structurii --dep x --env y --copy z
+comanda:> exit
+*/

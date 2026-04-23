@@ -360,36 +360,46 @@ void process_request_and_send(int client_fd, char *request) {
 }
 
 void load_env_file(const char *filename) {
-    FILE *fp = fopen(filename, "r");
-    if (fp == NULL) {
-        return; // aaca nu exista .env, mergem pe valorile default din cod
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        return; // daca nu exista .env, mergem pe valorile default din cod
     }
 
-    char line[256];
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        // ignoram liniile goale sau comentariile
-        if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
-            continue;
-        }
-
-        // cautam separatorul '='
-        char *separator = strchr(line, '=');
-        if (separator != NULL) {
-            *separator = '\0';
-            char *key = line;
-            char *value = separator + 1;
-
-            // eliminam newline-ul de la finalul valorii (\n sau \r\n)
-            size_t len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\n') value[len - 1] = '\0';
-            len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\r') value[len - 1] = '\0';
-
-            // injectam variabila in mediul procesului curent
-            setenv(key, value, 1);
-        }
+    char buffer[4096]; // buffer pentru tot fisierul
+    ssize_t bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+    if (bytes_read <= 0) {
+        close(fd);
+        return;
     }
-    fclose(fp);
+    buffer[bytes_read] = '\0';
+
+
+    char *ptr = buffer;
+    char *line_start = buffer;
+        while (*ptr) {
+        if (*ptr == '\n' || *ptr == '\r') {
+            *ptr = '\0'; // transformam linia intr-un string separat
+
+            // procesam linia dacă nu e goala sau contine comentariu
+            if (line_start[0] != '\0' && line_start[0] != '#') {
+                
+                // cautam '=' manual
+                char *sep = line_start;
+                while (*sep != '\0' && *sep != '=') sep++;
+
+                if (*sep == '=') {
+                    *sep = '\0';
+                    char *key = line_start;
+                    char *value = sep + 1;
+                    
+                    setenv(key, value, 1);
+                }
+            }
+            line_start = ptr + 1; // urmatoarea linie va incepe dupa separator
+        }
+        ptr++;
+    }
+    close(fd);
 }
 
 int main() {
@@ -430,23 +440,12 @@ int main() {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);//initializam curl
     
-    char msg_start[128];
-    // preluam valoarea returnata
-    int n = snprintf(msg_start, sizeof(msg_start), "[Server] Ascult pe port %d...\n", port);
-    
-    // verificam ca snprintf a reusit si nu a trunchiat textul
-    if (n > 0 && n < (int)sizeof(msg_start)) {
-        // folosim chiar valoarea 'n' in loc de custom_len, ca e mai eficient!
-        if (write(STDOUT_FILENO, msg_start, (size_t)n) < 0) {
-            perror("Eroare la pornire");     
-        }
-    }
-    
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen);//acceptam conexiunea de la client
         if (client_fd < 0) continue;
 
-        if (write(STDOUT_FILENO, "[Server] Client conectat!\n", 26) < 0) {
+        const char connected_client[] = "[Server] Client conectat!\n";
+        if (write(STDOUT_FILENO, connected_client, sizeof(connected_client) - 1) < 0) {
             perror("Eroare la afisare conectare");
         }
 
@@ -457,7 +456,8 @@ int main() {
             ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
             
             if (bytes_read <= 0) {
-                if (write(STDOUT_FILENO, "[Server] Client deconectat.\n", 28) < 0) {
+                const char disconnected_client[] = "[Server] Client deconectat.\n";
+                if (write(STDOUT_FILENO, disconnected_client, sizeof(disconnected_client) - 1) < 0) {
                     perror("Eroare la afisare deconectare");
                 }
                 break; 
@@ -472,3 +472,16 @@ int main() {
     curl_global_cleanup();
     return 0;
 }
+
+/*
+exemplu de rulare:
+alex@alex-LOQ-15IRX9:~/PCD/proiectpcd$ build/Release/server
+[Server] Client conectat!
+[MAP] Caut pachet prin intermediul curl
+[MAP] Caut pachet prin intermediul curl
+[MAP] Caut pachet prin intermediul curl
+[MAP] Caut pachet prin intermediul curl
+[MAP] Caut pachet prin intermediul curl
+[MAP] Caut pachet prin intermediul curl
+[Server] Client deconectat.
+*/
