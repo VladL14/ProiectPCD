@@ -13,7 +13,57 @@
 #include <netinet/in.h>  // pentru familiile de adrese si structurile de porturi (sockaddr_in)
 #include <arpa/inet.h>   // pentru inet_addr, converteste adresa ip in format de retea
 
+// functie ca sa inlocuim strlen
+size_t custom_len(const char *str) {
+    size_t i = 0;
+    while (str[i] != '\0') i++;
+    return i;
+}
+
+void load_env_file(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
+        return; // daca nu exista .env, mergem pe valorile default din cod
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        // ignoram liniile goale sau comentariile
+        if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
+            continue;
+        }
+
+        // cautam separatorul '='
+        char *separator = strchr(line, '=');
+        if (separator != NULL) {
+            *separator = '\0';
+            char *key = line;
+            char *value = separator + 1;
+
+            // eliminam newline-ul de la finalul valorii (\n sau \r\n)
+            size_t len = custom_len(value);
+            if (len > 0 && value[len - 1] == '\n') value[len - 1] = '\0';
+            len = custom_len(value);
+            if (len > 0 && value[len - 1] == '\r') value[len - 1] = '\0';
+
+            // injectam variabila in mediul procesului curent
+            setenv(key, value, 1);
+        }
+    }
+    fclose(fp);
+}
+
 int main() {
+    // incarcam variabilele din .env
+    load_env_file(".env");
+
+    // citim portul unde trebuie sa ne conectam
+    int port = 8080; // portul default (fallback)
+    char *env_port = getenv("SERVER_PORT");
+    if (env_port != NULL) {
+        port = (int)strtol(env_port, NULL, 10);
+    }
+
     // Cream un socket 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -24,7 +74,7 @@ int main() {
     // Configuram adresa serverului la care vrem sa ne conectam
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET; // adresa ipv4
-    server_addr.sin_port = htons(8080); // Setam portul 8080 si se converteste cu htons in format de retea
+    server_addr.sin_port = htons((uint16_t)port); // setam portul 8080 si se converteste cu htons in format de retea
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ne conectam la ocalhost
     for (int i = 0; i < 8; i++) server_addr.sin_zero[i] = '\0'; // Curatam restul structurii
 

@@ -16,7 +16,6 @@
 #include <curl/curl.h>   // libraria externa cu care luam json ul de pe internet
 #include <libconfig.h>   // libraria cu care citim cfg ul de baza al serverului
 
-#define PORT 8080
 #define CURL_BUFFER_SIZE 8192
 
 // functie ca sa inlocuim strlen
@@ -360,7 +359,55 @@ void process_request_and_send(int client_fd, char *request) {
     config_destroy(&cfg); // curatenie de memorie
 }
 
+void load_env_file(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
+        return; // aaca nu exista .env, mergem pe valorile default din cod
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        // ignoram liniile goale sau comentariile
+        if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
+            continue;
+        }
+
+        // cautam separatorul '='
+        char *separator = strchr(line, '=');
+        if (separator != NULL) {
+            *separator = '\0';
+            char *key = line;
+            char *value = separator + 1;
+
+            // eliminam newline-ul de la finalul valorii (\n sau \r\n)
+            size_t len = custom_len(value);
+            if (len > 0 && value[len - 1] == '\n') value[len - 1] = '\0';
+            len = custom_len(value);
+            if (len > 0 && value[len - 1] == '\r') value[len - 1] = '\0';
+
+            // injectam variabila in mediul procesului curent
+            setenv(key, value, 1);
+        }
+    }
+    fclose(fp);
+}
+
 int main() {
+    // incarcam variabilele din .env
+    load_env_file(".env");
+
+    // adaugam logica de citire portului
+    int port = 8080; // portul default (fallback)
+    char *env_port = getenv("SERVER_PORT");
+    if (env_port != NULL) {
+        char *endptr;
+        long val = strtol(env_port, &endptr, 10); // Conversie sigura
+        // Verificam sa fie un numar valid si sa se incadreze in limitele porturilor
+        if (*endptr == '\0' && val > 0 && val <= 65535) {
+            port = (int)val;
+        }
+    }
+
     // initializam serverul tcp, cod folosit si la teme anterioare
     int server_fd, client_fd;
     struct sockaddr_in address;
@@ -374,7 +421,7 @@ int main() {
 
     address.sin_family = AF_INET; //adresa ipv4
     address.sin_addr.s_addr = INADDR_ANY;//poate primi de la orice adresa
-    address.sin_port = htons(PORT);//htons transforma din int in limbaj de retea
+    address.sin_port = htons((uint16_t)port);//htons transforma din int in limbaj de retea
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) return 1;
     
@@ -383,10 +430,18 @@ int main() {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);//initializam curl
     
-    char msg_start[] = "[Server] Ascult pe port 8080...\n";
-    if (write(STDOUT_FILENO, msg_start, custom_len(msg_start)) < 0) {
-        perror("Eroare la pornire");
+    char msg_start[128];
+    // preluam valoarea returnata
+    int n = snprintf(msg_start, sizeof(msg_start), "[Server] Ascult pe port %d...\n", port);
+    
+    // verificam ca snprintf a reusit si nu a trunchiat textul
+    if (n > 0 && n < (int)sizeof(msg_start)) {
+        // folosim chiar valoarea 'n' in loc de custom_len, ca e mai eficient!
+        if (write(STDOUT_FILENO, msg_start, (size_t)n) < 0) {
+            perror("Eroare la pornire");     
+        }
     }
+    
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen);//acceptam conexiunea de la client
         if (client_fd < 0) continue;
