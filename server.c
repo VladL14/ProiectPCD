@@ -10,7 +10,7 @@
 #include <string.h>      // strcmp, strtok, strstr
 #include <unistd.h>      // read, write, close
 #include <fcntl.h>       // o_rdonly, o_wronly, o_creat, o_trunc
-#include <sys/wait.h>    // waitpid, WIFEXITED
+#include <sys/wait.h>    // waitpid
 #include <sys/socket.h>  // socket, bind, listen, accept, send, recv
 #include <netinet/in.h>  // pentru structurile de ip si porturi
 #include <curl/curl.h>   // libraria externa cu care luam json ul de pe internet
@@ -88,7 +88,7 @@ typedef struct {
 static int check_via_repology(const char *pkg, char *version, size_t vsz) {
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
-    // asamblam url ul manual ca sa evitam sprintf, ui tine evidenta la ce caracter am ajuns in url, iar pi parcurge literele pachetului
+    // asamblam url ul manual ca sa evitam snprintf, ui tine evidenta la ce caracter am ajuns in url, iar pi parcurge literele pachetului
     char url[512];
     int ui = 0;
     const char *base = "https://repology.org/api/v1/project/";
