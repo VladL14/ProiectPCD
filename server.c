@@ -19,12 +19,48 @@
 
 #define MAX_CLIENTS 10
 #define CURL_BUFFER_SIZE 8192
+#define MAX_DEPENDENCIES 10
+#define MAX_NAME_LENGTH 64
+#define VERSION_LENGTH 64
+#define SOURCE_LENGTH 32
+#define PATTERN_SIZE 128
+#define URL_BUFFER_SIZE 512
+#define URL_BASE_LIMIT 480
+#define URL_PKG_LIMIT 505
+#define URL_HOMEBREW_BASE_LIMIT 470
+#define URL_HOMEBREW_PKG_LIMIT 500
+#define LOG_BUFFER_SIZE 256
+#define ENV_LINE_SIZE 256
+#define MESSAGE_BUFFER_SIZE 128
+#define VERSION_COMMENT_SIZE 128
+#define CLIENT_BUFFER_SIZE 1024
+#define PATTERN_KEY_LIMIT 126
+#define MAX_ITEM_LENGTH 63
+#define DEFAULT_PORT 8080
+#define MAX_PORT 65535
+#define DECIMAL_BASE 10
+#define LISTEN_BACKLOG 5
+#define SIN_ZERO_SIZE 8
+#define HTTP_OK 200
+#define MIN_JSON_RESPONSE 5
+#define URL_EXTENSION_BUFFER 6
+#define FROM_LABEL_SIZE 5
+#define LABEL_MAINTAINER_SIZE 19
+#define WORKDIR_PREFIX_SIZE 10
+#define COPY_PREFIX_SIZE 5
+#define FAILED_PREFIX_SIZE 13
+#define FAILED_SUFFIX_SIZE 28
+#define CLIENT_CONNECTED_MSG_SIZE 30
+#define CLIENT_DISCONNECTED_MSG_SIZE 28
+#define TOO_MANY_CLIENTS_MSG_SIZE 51
 
 // Functie utilitara pentru a evita strlen
-size_t custom_len(const char *str) {
-    size_t i = 0;
-    while (str[i] != '\0') i++;
-    return i;
+static size_t custom_len(const char *str) {
+    size_t idx = 0;
+    while (str[idx] != '\0') {
+        idx++;
+    }
+    return idx;
 }
 
 //struct care defineste un buffer dinamic in care se acumuleaza raspunsurile HTTP
@@ -34,58 +70,63 @@ typedef struct {
     size_t len;
 } CurlBuffer;
 
-//nu se poate extrage versiunea fara sa accesam JSON ul
-// Functie dummy pentru a impiedica libcurl sa afiseze JSON-ul descarcat pe ecran
-size_t curl_dummy_write(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    return size * nmemb; 
-}
-
-//callback pentur libcurl
+//callback pentru libcurl
 //copiere date in buffer
-size_t curl_write_buffer(void *ptr, size_t size, size_t nmemb, void *userdata) {
+static size_t curl_write_buffer(void *ptr, size_t size, size_t nmemb, void *userdata) {
     CurlBuffer *buf = (CurlBuffer *)userdata;
     size_t incoming = size * nmemb;
  
-    ///protectie buffer overflow 
-    if (buf->len + incoming >= sizeof(buf->data) - 1)
+    ///protectie buffer overflow
+    if (buf->len + incoming >= sizeof(buf->data) - 1) {
         incoming = sizeof(buf->data) - 1 - buf->len;
+    }
  
-    int i;
-    for (i = 0; i < (int)incoming; i++)
-        buf->data[buf->len + i] = ((char *)ptr)[i];
+    int idx;
+    for (idx = 0; idx < (int)incoming; idx++) {
+        buf->data[buf->len + idx] = ((char *)ptr)[idx];
+    }
  
     buf->len += incoming;
     buf->data[buf->len] = '\0';
-    return size * nmemb; // returnam size*nmemb, altfel curl semnaleaza eroare 
+    return size * nmemb; // returnam size*nmemb, altfel curl semnaleaza eroare
 }
 
-int extract_json_string(const char *json, const char *key, char *out, size_t out_sz) {
+static int extract_json_string(const char *json, const char *key, char *out, size_t out_sz) {
     // Construim pattern-ul key : value
-    char pattern[128];
+    char pattern[PATTERN_SIZE];
     pattern[0] = '"';
-    int pi = 1;
-    int ki = 0;
-    while (key[ki] && pi < 126) pattern[pi++] = key[ki++];
-    pattern[pi++] = '"';
-    pattern[pi] = '\0';
+    int pattern_idx = 1;
+    int key_idx = 0;
+    while (key[key_idx] && pattern_idx < PATTERN_KEY_LIMIT) {
+        pattern[pattern_idx++] = key[key_idx++];
+    }
+    pattern[pattern_idx++] = '"';
+    pattern[pattern_idx] = '\0';
  
     const char *pos = strstr(json, pattern);
-    if (!pos) return 0;
+    if (!pos) {
+        return 0;
+    }
  
-    pos += pi; //sarim peste key
+    pos += pattern_idx; //sarim peste key
  
-    //sarim spatii si ':' 
-    while (*pos == ' ' || *pos == ':') pos++;
+    //sarim spatii si ':'
+    while (*pos == ' ' || *pos == ':') {
+        pos++;
+    }
  
-    if (*pos != '"') return 0; //valoarea nu e string 
-    pos++; //sarim ghilimelele de deschidere 
+    if (*pos != '"') {
+        return 0; //valoarea nu e string
+    }
+    pos++; //sarim ghilimelele de deschidere
  
-    size_t i = 0;
-    while (*pos && *pos != '"' && i < out_sz - 1)
-        out[i++] = *pos++;
-    out[i] = '\0';
+    size_t out_idx = 0;
+    while (*pos && *pos != '"' && out_idx < out_sz - 1) {
+        out[out_idx++] = *pos++;
+    }
+    out[out_idx] = '\0';
  
-    return (i > 0) ? 1 : 0;
+    return (out_idx > 0) ? 1 : 0;
 }
 
 /*
@@ -110,23 +151,29 @@ int extract_json_string(const char *json, const char *key, char *out, size_t out
 //struct rezultat returnata de procesul fiu parintelui prin pipe
 //dimensiune fixa = un singur write() atomic (<= PIPE_BUF = 4096 pe Linux
 typedef struct {
-    int  valid;        // 1 = pachet gasit, 0 = nu exista 
-    char version[64];  //  versiunea cea mai noua gasita / "" daca nu stim 
-    char source[32];   //"repology" / "homebrew" / "not found" 
+    int  valid;        // 1 = pachet gasit, 0 = nu exista
+    char version[VERSION_LENGTH];  //  versiunea cea mai noua gasita / "" daca nu stim
+    char source[SOURCE_LENGTH];   //"repology" / "homebrew" / "not found"
 } DepResult;
 
 //verificare via repology
 static int check_via_repology(const char *pkg, char *version, size_t vsz) {
     CURL *curl = curl_easy_init();
-    if (!curl) return 0;
-    // asamblam url ul manual ca sa evitam snprintf, ui tine evidenta la ce caracter am ajuns in url, iar pi parcurge literele pachetului
-    char url[512];
-    int ui = 0;
+    if (!curl) {
+        return 0;
+    }
+    // asamblam url ul manual ca sa evitam snprintf, url_idx tine evidenta la ce caracter am ajuns in url, iar pkg_idx parcurge literele pachetului
+    char url[URL_BUFFER_SIZE];
+    int url_idx = 0;
     const char *base = "https://repology.org/api/v1/project/";
-    while (*base && ui < 480) url[ui++] = *base++;
-    int pi = 0;
-    while (pkg[pi] && ui < 505) url[ui++] = pkg[pi++];
-    url[ui] = '\0';
+    while (*base && url_idx < URL_BASE_LIMIT) {
+        url[url_idx++] = *base++;
+    }
+    int pkg_idx = 0;
+    while (pkg[pkg_idx] && url_idx < URL_PKG_LIMIT) {
+        url[url_idx++] = pkg[pkg_idx++];
+    }
+    url[url_idx] = '\0';
  
     CurlBuffer buf;
     buf.len = 0;
@@ -137,21 +184,27 @@ static int check_via_repology(const char *pkg, char *version, size_t vsz) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0 (demo academic)");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L); // timeout 8s per verificare 
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L); // timeout 8s per verificare
  
     CURLcode res = curl_easy_perform(curl);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK || http_code != 200) return 0;
-    if (buf.len < 5) return 0; // raspuns gol = pachet inexistent 
+    if (res != CURLE_OK || http_code != HTTP_OK) {
+        return 0;
+    }
+    if (buf.len < MIN_JSON_RESPONSE) {
+        return 0; // raspuns gol = pachet inexistent
+    }
  
-    //Repology returneaza un array JSON; daca e "[]" = nu exista 
-    if (buf.data[0] == '[' && buf.data[1] == ']') return 0;
+    //Repology returneaza un array JSON; daca e "[]" = nu exista
+    if (buf.data[0] == '[' && buf.data[1] == ']') {
+        return 0;
+    }
  
     
-    //Extragem "version" din primul obiect din array 
+    //Extragem "version" din primul obiect din array
     extract_json_string(buf.data, "version", version, vsz);
  
     return 1;
@@ -160,19 +213,27 @@ static int check_via_repology(const char *pkg, char *version, size_t vsz) {
 //verificare via homebrew
 static int check_via_homebrew(const char *pkg, char *version, size_t vsz) {
     CURL *curl = curl_easy_init();
-    if (!curl) return 0;
+    if (!curl) {
+        return 0;
+    }
  
-    char url[512];
-    int ui = 0;
+    char url[URL_BUFFER_SIZE];
+    int url_idx = 0;
     const char *base = "https://formulae.brew.sh/api/formula/";
-    while (*base && ui < 470) url[ui++] = *base++;
-    int pi = 0;
-    while (pkg[pi] && ui < 500) url[ui++] = pkg[pi++];
-    // adaugam .json 
+    while (*base && url_idx < URL_HOMEBREW_BASE_LIMIT) {
+        url[url_idx++] = *base++;
+    }
+    int pkg_idx = 0;
+    while (pkg[pkg_idx] && url_idx < URL_HOMEBREW_PKG_LIMIT) {
+        url[url_idx++] = pkg[pkg_idx++];
+    }
+    // adaugam .json
     const char *ext = ".json";
-    int ei = 0;
-    while (ext[ei]) url[ui++] = ext[ei++];
-    url[ui] = '\0';
+    int ext_idx = 0;
+    while (ext[ext_idx]) {
+        url[url_idx++] = ext[ext_idx++];
+    }
+    url[url_idx] = '\0';
  
     CurlBuffer buf;
     buf.len = 0;
@@ -190,9 +251,11 @@ static int check_via_homebrew(const char *pkg, char *version, size_t vsz) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
  
-    if (res != CURLE_OK || http_code != 200) return 0;
+    if (res != CURLE_OK || http_code != HTTP_OK) {
+        return 0;
+    }
  
-    // Homebrew: versiunea e in "versions":{"stable":"X.Y.Z"} 
+    // Homebrew: versiunea e in "versions":{"stable":"X.Y.Z"}
     // Cautam "stable" in contextul "versions" */
     const char *ver_section = strstr(buf.data, "\"versions\"");
     if (ver_section) {
@@ -210,220 +273,214 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
     result.version[0] = '\0';
     result.source[0] = '\0';
  
-    //Mesaj log asamblat atomic (evitam interleaving pe stdout cu alte procese) 
-    char log[256];
-    int li = 0;
+    //Mesaj log asamblat atomic (evitam interleaving pe stdout cu alte procese)
+    char log[LOG_BUFFER_SIZE];
+    int log_idx = 0;
     const char *pre = "[MAP] Verific: ";
-    int i = 0;
-    while (pre[i]) log[li++] = pre[i++];
-    i = 0;
-    while (dep_name[i]) log[li++] = dep_name[i++];
+    int idx = 0;
+    while (pre[idx]) {
+        log[log_idx++] = pre[idx++];
+    }
+    idx = 0;
+    while (dep_name[idx]) {
+        log[log_idx++] = dep_name[idx++];
+    }
  
     //Incearca repology
     if (check_via_repology(dep_name, result.version, sizeof(result.version))) {
         result.valid = 1;
         const char *src = "repology";
-        i = 0;
-        while (src[i]) { result.source[i] = src[i]; i++; }
-        result.source[i] = '\0';
+        idx = 0;
+        while (src[idx]) {
+            result.source[idx] = src[idx];
+            idx++;
+        }
+        result.source[idx] = '\0';
  
-        const char *ok = " -> OK (repology) v";
-        i = 0; while (ok[i]) log[li++] = ok[i++];
-        i = 0; while (result.version[i]) log[li++] = result.version[i++];
-        log[li++] = '\n';
-        write(STDOUT_FILENO, log, li);
+        const char *msg_ok = " -> OK (repology) v";
+        idx = 0;
+        while (msg_ok[idx]) {
+            log[log_idx] = msg_ok[idx];
+            log_idx++;
+            idx++;
+        }
+        idx = 0;
+        while (result.version[idx]) {
+            log[log_idx] = result.version[idx];
+            log_idx++;
+            idx++;
+        }
+        log[log_idx++] = '\n';
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
     //Fallback homebrew
     else if (check_via_homebrew(dep_name, result.version, sizeof(result.version))) {
         result.valid = 1;
         const char *src = "homebrew";
-        i = 0;
-        while (src[i]) { result.source[i] = src[i]; i++; }
-        result.source[i] = '\0';
+        idx = 0;
+        while (src[idx]) {
+            result.source[idx] = src[idx];
+            idx++;
+        }
+        result.source[idx] = '\0';
  
-        const char *ok = " -> OK (homebrew fallback) v";
-        i = 0; while (ok[i]) log[li++] = ok[i++];
-        i = 0; while (result.version[i]) log[li++] = result.version[i++];
-        log[li++] = '\n';
-        write(STDOUT_FILENO, log, li);
+        const char *msg_ok = " -> OK (homebrew fallback) v";
+        idx = 0;
+        while (msg_ok[idx]) {
+            log[log_idx] = msg_ok[idx];
+            log_idx++;
+            idx++;
+        }
+        idx = 0;
+        while (result.version[idx]) {
+            log[log_idx] = result.version[idx];
+            log_idx++;
+            idx++;
+        }
+        log[log_idx++] = '\n';
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
     //Esec total
     else {
         const char *src = "not found";
-        i = 0;
-        while (src[i]) { result.source[i] = src[i]; i++; }
-        result.source[i] = '\0';
+        idx = 0;
+        while (src[idx]) {
+            result.source[idx] = src[idx];
+            idx++;
+        }
+        result.source[idx] = '\0';
  
         const char *err = " -> ESUAT (404 pe ambele API-uri)\n";
-        i = 0; while (err[i]) log[li++] = err[i++];
-        write(STDOUT_FILENO, log, li);
+        idx = 0;
+        while (err[idx]) {
+            log[log_idx] = err[idx];
+            log_idx++;
+            idx++;
+        }
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
  
-    // Trimitem struct-ul rezultat parintelui prin pipe 
-    write(pipe_fd, &result, sizeof(DepResult));
+    if (write(pipe_fd, &result, sizeof(DepResult)) < 0) {
+        perror("write");
+    }
     close(pipe_fd);
 }
 
 
 
-/* --- 1. VERIFICAREA PACHETELOR (MAP) --- */
-int check_dependency_online(const char *dep_name) {
-    CURL *curl;
-    CURLcode res;
-    long response_code = 0;
-    int success = 0;
-
-    char url[512];
-    for (int k = 0; k < 512; k++) url[k] = '\0'; 
-
-    // Folosim API-ul Homebrew: este ultra-rapid si returneaza 404 real daca pachetul nu exista
-    const char *base = "https://formulae.brew.sh/api/formula/";
-    size_t i = 0;
-    while (base[i] != '\0' && i < sizeof(url) - 6) {
-        url[i] = base[i];
-        i++;
-    }
-    size_t j = 0;
-    while (dep_name[j] != '\0' && i < sizeof(url) - 6) {
-        url[i++] = dep_name[j++];
-    }
-    
-    // Adaugam extensia .json
-    char *ext = ".json";
-    int e = 0;
-    while(ext[e] != '\0') url[i++] = ext[e++];
-
-    curl = curl_easy_init();
-    if(curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_dummy_write); // Ascundem output-ul
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "DockerGen/1.0");
-
-        res = curl_easy_perform(curl);
-        if(res == CURLE_OK) {
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-            if (response_code == 200) success = 1; // Pachet valid!
-        }
-        curl_easy_cleanup(curl);
-    }
-    return success; 
-}
-
-/* --- 2. LOGICA CENTRALA DE PROCESARE A CERERII --- */
-void process_request_and_send(int client_fd, char *request) {
-    char deps[10][64];  int dep_count = 0;
-    char envs[10][64];  int env_count = 0;
-    char copies[10][64]; int copy_count = 0;
+/* --- LOGICA CENTRALA DE PROCESARE A CERERII --- */
+static void process_request_and_send(int client_fd, const char *request) {
+    char deps[MAX_DEPENDENCIES][MAX_NAME_LENGTH];
+    int dep_count = 0;
+    char envs[MAX_DEPENDENCIES][MAX_NAME_LENGTH];
+    int env_count = 0;
+    char copies[MAX_DEPENDENCIES][MAX_NAME_LENGTH];
+    int copy_count = 0;
 
     // Resetare matrici manual
-    for (int i = 0; i < 10; i++) {
-        for (int j = 0; j < 64; j++) {
-            deps[i][j] = '\0'; envs[i][j] = '\0'; copies[i][j] = '\0';
+    for (int idx = 0; idx < MAX_DEPENDENCIES; idx++) {
+        for (int jdx = 0; jdx < MAX_NAME_LENGTH; jdx++) {
+            deps[idx][jdx] = '\0';
+            envs[idx][jdx] = '\0';
+            copies[idx][jdx] = '\0';
         }
     }
 
     // PASUL 2A: PARSAREA
     size_t req_idx = 0;
     while (request[req_idx] != '\0') {
-        while (request[req_idx] == ' ') req_idx++; 
-        if (request[req_idx] == '\0') break;
+        while (request[req_idx] == ' ') {
+            req_idx++;
+        }
+        if (request[req_idx] == '\0') {
+            break;
+        }
 
-        char type = request[req_idx]; 
+        char type = request[req_idx];
         if (request[req_idx + 1] == ':') {
-            req_idx += 2; 
+            req_idx += 2;
             size_t char_idx = 0;
             
-            while (request[req_idx] != ' ' && request[req_idx] != '\0' && char_idx < 63) {
-                if (type == 'D' && dep_count < 10) deps[dep_count][char_idx++] = request[req_idx];
-                else if (type == 'E' && env_count < 10) envs[env_count][char_idx++] = request[req_idx];
-                else if (type == 'C' && copy_count < 10) {
-                    if (request[req_idx] == ',') copies[copy_count][char_idx++] = ' '; 
-                    else copies[copy_count][char_idx++] = request[req_idx];
+            while (request[req_idx] != ' ' && request[req_idx] != '\0' && char_idx < MAX_ITEM_LENGTH) {
+                if (type == 'D' && dep_count < MAX_DEPENDENCIES) {
+                    deps[dep_count][char_idx++] = request[req_idx];
+                } else if (type == 'E' && env_count < MAX_DEPENDENCIES) {
+                    envs[env_count][char_idx++] = request[req_idx];
+                } else if (type == 'C' && copy_count < MAX_DEPENDENCIES) {
+                    if (request[req_idx] == ',') {
+                        copies[copy_count][char_idx++] = ' ';
+                    } else {
+                        copies[copy_count][char_idx++] = request[req_idx];
+                    }
                 }
                 req_idx++;
             }
-            if (type == 'D' && dep_count < 10) dep_count++;
-            if (type == 'E' && env_count < 10) env_count++;
-            if (type == 'C' && copy_count < 10) copy_count++;
+            if (type == 'D' && dep_count < MAX_DEPENDENCIES) {
+                dep_count++;
+            }
+            if (type == 'E' && env_count < MAX_DEPENDENCIES) {
+                env_count++;
+            }
+            if (type == 'C' && copy_count < MAX_DEPENDENCIES) {
+                copy_count++;
+            }
         } else {
-            while (request[req_idx] != ' ' && request[req_idx] != '\0') req_idx++;
+            while (request[req_idx] != ' ' && request[req_idx] != '\0') {
+                req_idx++;
+            }
         }
     }
 
     // PASUL 2B: MAP-REDUCE (Paralelizare)
-    pid_t pids[10];
-    int valid_deps[10] = {0};
-    int pipe_fds[10][2]; //[i][0]=citire(parinte), [i][1]=scriere(fiu)
-    DepResult results[10];
+    pid_t pids[MAX_DEPENDENCIES];
+    int pipe_fds[MAX_DEPENDENCIES][2]; //[i][0]=citire(parinte), [i][1]=scriere(fiu)
+    DepResult results[MAX_DEPENDENCIES];
 
-    for (int i = 0; i < 10; i++) {
-        results[i].valid      = 0;
-        results[i].version[0] = '\0';
-        results[i].source[0]  = '\0';
-        pipe_fds[i][0] = pipe_fds[i][1] = -1;
+    for (int idx = 0; idx < MAX_DEPENDENCIES; idx++) {
+        results[idx].valid      = 0;
+        results[idx].version[0] = '\0';
+        results[idx].source[0]  = '\0';
+        pipe_fds[idx][0] = pipe_fds[idx][1] = -1;
     }
 
-    // MAP: Fiii fac verificarea online
-    /*for (int i = 0; i < dep_count; i++) {
-        pids[i] = fork();
-        if (pids[i] == 0) {
-            // Asamblam mesajul complet in memorie pentru un singur apel write()
-            // Acest lucru previne "Race Conditions" pe consola (ex: litere amestecate)
-            char msg_buf[256];
-            for (int k = 0; k < 256; k++) msg_buf[k] = '\0';
-            
-            char *prefix = "[MAP] Verific pachet: ";
-            size_t idx = 0;
-            while(prefix[idx]) { msg_buf[idx] = prefix[idx]; idx++; }
-            
-            size_t d_idx = 0;
-            while(deps[i][d_idx]) { msg_buf[idx++] = deps[i][d_idx++]; }
-            
-            int is_valid = check_dependency_online(deps[i]); 
-            
-            if(is_valid) {
-                char *res_ok = " -> EXISTĂ (200 OK)\n";
-                int r = 0; while(res_ok[r]) { msg_buf[idx++] = res_ok[r++]; }
-                write(STDOUT_FILENO, msg_buf, idx);
-                exit(0); 
-            } else {
-                char *res_err = " -> EȘUAT (404 Not Found)\n";
-                int r = 0; while(res_err[r]) { msg_buf[idx++] = res_err[r++]; }
-                write(STDOUT_FILENO, msg_buf, idx);
-                exit(1); 
-            }
+    // MAP: cream cate un fiu per dependinta
+    for (int idx = 0; idx < dep_count; idx++) {
+        if (pipe(pipe_fds[idx]) < 0) {
+            pids[idx] = -1;
+            continue;
         }
-    }*/
-    // MAP: cream cate un fiu per dependinta 
-    for (int i = 0; i < dep_count; i++) {
-        if (pipe(pipe_fds[i]) < 0) { pids[i] = -1; continue; }
  
-        pids[i] = fork();
-        if (pids[i] == 0) {
+        pids[idx] = fork();
+        if (pids[idx] == 0) {
             //fiul
-            close(pipe_fds[i][0]); //fiul nu citeste din pipe 
-            child_check_dep(deps[i], pipe_fds[i][1]);
-            exit(0); //exit code nu mai conteaza, datele sunt in pipe 
+            close(pipe_fds[idx][0]); //fiul nu citeste din pipe
+            child_check_dep(deps[idx], pipe_fds[idx][1]);
+            _Exit(0); //exit code nu mai conteaza, datele sunt in pipe
         } else {
             //parintele
-            close(pipe_fds[i][1]); //parintele nu scrie in pipe 
+            close(pipe_fds[idx][1]); //parintele nu scrie in pipe
         }
     }
 
 
     // REDUCE: Parintele asteapta copiii
-    for (int i = 0; i < dep_count; i++) {
-        //mut declaratia asta in if int status;
-        if (pids[i] > 0) {
+    for (int idx = 0; idx < dep_count; idx++) {
+        if (pids[idx] > 0) {
             int status;
-            waitpid(pids[i], &status, 0);
-            /*if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                valid_deps[i] = 1; 
-            }*/
-            ssize_t rd = read(pipe_fds[i][0], &results[i], sizeof(DepResult));
-            if (rd != sizeof(DepResult)) results[i].valid = 0; 
-            close(pipe_fds[i][0]);
+            if (waitpid(pids[idx], &status, 0) < 0) {
+                perror("waitpid");
+            }
+            ssize_t bytes_read = read(pipe_fds[idx][0], &results[idx], sizeof(DepResult));
+            if (bytes_read != sizeof(DepResult)) {
+                results[idx].valid = 0;
+            }
+            close(pipe_fds[idx][0]);
         }
     }
 
@@ -441,81 +498,96 @@ void process_request_and_send(int client_fd, char *request) {
         config_lookup_string(&cfg, "container.workdir", &workdir);
     }
 
-    // PASUL 2D: ASAMBLAREA DOCKERFILE-ULUI
-    send(client_fd, "FROM ", 5, 0);
+    send(client_fd, "FROM ", FROM_LABEL_SIZE, 0);
     send(client_fd, base_image, custom_len(base_image), 0);
-    send(client_fd, "\nLABEL maintainer=\"", 19, 0);
+    send(client_fd, "\nLABEL maintainer=\"", LABEL_MAINTAINER_SIZE, 0);
     send(client_fd, maintainer, custom_len(maintainer), 0);
-    send(client_fd, "\"\nWORKDIR ", 10, 0);
+    send(client_fd, "\"\nWORKDIR ", WORKDIR_PREFIX_SIZE, 0);
     send(client_fd, workdir, custom_len(workdir), 0);
     send(client_fd, "\n\n", 2, 0);
 
-    for (int i = 0; i < env_count; i++) {
+    for (int idx = 0; idx < env_count; idx++) {
         send(client_fd, "ENV ", 4, 0);
-        send(client_fd, envs[i], custom_len(envs[i]), 0);
+        send(client_fd, envs[idx], custom_len(envs[idx]), 0);
         send(client_fd, "\n", 1, 0);
     }
-    if (env_count > 0) send(client_fd, "\n", 1, 0);
+    if (env_count > 0) {
+        send(client_fd, "\n", 1, 0);
+    }
 
-    for (int i = 0; i < copy_count; i++) {
-        send(client_fd, "COPY ", 5, 0);
-        send(client_fd, copies[i], custom_len(copies[i]), 0);
+    for (int idx = 0; idx < copy_count; idx++) {
+        send(client_fd, "COPY ", COPY_PREFIX_SIZE, 0);
+        send(client_fd, copies[idx], custom_len(copies[idx]), 0);
         send(client_fd, "\n", 1, 0);
     }
-    if (copy_count > 0) send(client_fd, "\n", 1, 0);
+    if (copy_count > 0) {
+        send(client_fd, "\n", 1, 0);
+    }
 
     if (dep_count > 0) {
-        char *run_start = "RUN apt-get update && apt-get install -y \\\n";
+        const char *run_start = "RUN apt-get update && apt-get install -y \\\n";
         send(client_fd, run_start, custom_len(run_start), 0);
         
-        for (int i = 0; i < dep_count; i++) {
-            if (results[i].valid) { 
+        for (int idx = 0; idx < dep_count; idx++) {
+            if (results[idx].valid) {
                 send(client_fd, "    ", 4, 0);
-                send(client_fd, deps[i], custom_len(deps[i]), 0);
-                if (results[i].version[0] != '\0') {
-                    char ver_comment[128];
-                    // construim " \  # v<version> (<source>)\n" 
-                    int vi = 0;
-                    const char *p1 = " \\  # v";
-                    int k = 0; while (p1[k]) ver_comment[vi++] = p1[k++];
-                    k = 0; while (results[i].version[k]) ver_comment[vi++] = results[i].version[k++];
-                    ver_comment[vi++] = ' '; ver_comment[vi++] = '(';
-                    k = 0; while (results[i].source[k]) ver_comment[vi++] = results[i].source[k++];
-                    ver_comment[vi++] = ')'; ver_comment[vi++] = '\n';
-                    ver_comment[vi] = '\0';
-                    send(client_fd, ver_comment, vi, 0);
+                send(client_fd, deps[idx], custom_len(deps[idx]), 0);
+                if (results[idx].version[0] != '\0') {
+                    char ver_comment[VERSION_COMMENT_SIZE];
+                    // construim " \  # v<version> (<source>)\n"
+                    int ver_idx = 0;
+                    const char *prefix = " \\  # v";
+                    int kdx = 0;
+                    while (prefix[kdx]) {
+                        ver_comment[ver_idx++] = prefix[kdx++];
+                    }
+                    kdx = 0;
+                    while (results[idx].version[kdx]) {
+                        ver_comment[ver_idx++] = results[idx].version[kdx++];
+                    }
+                    ver_comment[ver_idx++] = ' ';
+                    ver_comment[ver_idx++] = '(';
+                    kdx = 0;
+                    while (results[idx].source[kdx]) {
+                        ver_comment[ver_idx++] = results[idx].source[kdx++];
+                    }
+                    ver_comment[ver_idx++] = ')';
+                    ver_comment[ver_idx++] = '\n';
+                    ver_comment[ver_idx] = '\0';
+                    send(client_fd, ver_comment, (size_t)ver_idx, 0);
                 } else {
                     send(client_fd, " \\\n", 3, 0);
                 }
             } else {
-                send(client_fd, "    # ESUAT: ", 13, 0);
-                send(client_fd, deps[i], custom_len(deps[i]), 0);
-                send(client_fd, " (Lipseste din repozitoriu)\n", 28, 0);
+                send(client_fd, "    # ESUAT: ", FAILED_PREFIX_SIZE, 0);
+                send(client_fd, deps[idx], custom_len(deps[idx]), 0);
+                send(client_fd, " (Lipseste din repozitoriu)\n", FAILED_SUFFIX_SIZE, 0);
             }
         }
-        char *run_end = "    && apt-get clean \\\n    && rm -rf /var/lib/apt/lists/*\n\n";
+        const char *run_end = "    && apt-get clean \\\n    && rm -rf /var/lib/apt/lists/*\n\n";
         send(client_fd, run_end, custom_len(run_end), 0);
     }
 
-    char *footer = "CMD [\"/bin/bash\"]\n";
+    const char *footer = "CMD [\"/bin/bash\"]\n";
     send(client_fd, footer, custom_len(footer), 0);
 
-    // Marker-ul pentru a spune clientului ca s-a terminat fisierul
-    char *eof_marker = "\n===EOF===\n";
+    const char *eof_marker = "\n===EOF===\n";
     send(client_fd, eof_marker, custom_len(eof_marker), 0);
 
     config_destroy(&cfg);
 }
 
-void load_env_file(const char *filename) {
-    FILE *fp = fopen(filename, "r");
-    if (fp == NULL) {
+static void load_env_file(const char *filename) {
+    FILE *file_ptr = fopen(filename, "r");
+    if (file_ptr == NULL) {
         return; // daca nu exista .env, mergem pe valorile default din cod
     }
 
-    char line[256];
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') continue;
+    char line[ENV_LINE_SIZE];
+    while (fgets(line, sizeof(line), file_ptr) != NULL) {
+        if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
+            continue;
+        }
 
         char *separator = strchr(line, '=');
         if (separator != NULL) {
@@ -524,47 +596,67 @@ void load_env_file(const char *filename) {
             char *value = separator + 1;
 
             size_t len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\n') value[len - 1] = '\0';
+            if (len > 0 && value[len - 1] == '\n') {
+                value[len - 1] = '\0';
+            }
             len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\r') value[len - 1] = '\0';
+            if (len > 0 && value[len - 1] == '\r') {
+                value[len - 1] = '\0';
+            }
 
-            setenv(key, value, 1);
+            if (setenv(key, value, 1) != 0) {
+                perror("setenv");
+            }
         }
     }
-    fclose(fp);
+    if (fclose(file_ptr) != 0) {
+        perror("fclose");
+    }
 }
 
 /* --- 3. SERVERUL PRINCIPAL --- */
-int main() {
+int main(void) {
     load_env_file(".env");
 
-    int port = 8080; // portul default (fallback)
+    int port = DEFAULT_PORT; // portul default (fallback)
     char *env_port = getenv("SERVER_PORT");
     if (env_port != NULL) {
         char *endptr;
-        long val = strtol(env_port, &endptr, 10);
-        if (*endptr == '\0' && val > 0 && val <= 65535) {
+        long val = strtol(env_port, &endptr, DECIMAL_BASE);
+        if (*endptr == '\0' && val > 0 && val <= MAX_PORT) {
             port = (int)val;
         }
     }
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) { perror("Eroare socket"); return 1; }
+    if (server_fd < 0) {
+        perror("Eroare socket");
+        return 1;
+    }
 
     int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+    }
 
     struct sockaddr_in address;
     address.sin_family      = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port        = htons((uint16_t)port);
-    for (int i = 0; i < 8; i++) address.sin_zero[i] = '\0';
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Eroare la bind"); return 1;
+    for (int idx = 0; idx < SIN_ZERO_SIZE; idx++) {
+        address.sin_zero[idx] = '\0';
     }
 
-    listen(server_fd, 5);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Eroare la bind");
+        return 1;
+    }
+
+    if (listen(server_fd, LISTEN_BACKLOG) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     // construim mesajul de pornire fara snprintf (evitam warning-ul de securitate)
@@ -581,14 +673,18 @@ int main() {
 
     // MULTIPLEXARE cu poll()
     struct pollfd fds[MAX_CLIENTS];
-    for (int i = 0; i < MAX_CLIENTS; i++) fds[i].fd = -1;
+    for (int idx = 0; idx < MAX_CLIENTS; idx++) {
+        fds[idx].fd = -1;
+    }
     fds[0].fd     = server_fd;
     fds[0].events = POLLIN;
 
 
     while (1) {
-        int ready = poll(fds, MAX_CLIENTS, -1); 
-        if (ready < 0) break;
+        int ready = poll(fds, MAX_CLIENTS, -1);
+        if (ready < 0) {
+            break;
+        }
 
         // Conexiune noua
         if (fds[0].revents & POLLIN) {
@@ -597,31 +693,45 @@ int main() {
             int new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
             
             if (new_socket >= 0) {
-                write(STDOUT_FILENO, "[Server] Client nou conectat.\n", 30);
-                for (int i = 1; i < MAX_CLIENTS; i++) {
-                    if (fds[i].fd < 0) {
-                        fds[i].fd = new_socket;
-                        fds[i].events = POLLIN;
+                if (write(STDOUT_FILENO, "[Server] Client nou conectat.\n", CLIENT_CONNECTED_MSG_SIZE) < 0) {
+                    perror("write");
+                }
+                int slot_found = 0;
+                for (int idx = 1; idx < MAX_CLIENTS; idx++) {
+                    if (fds[idx].fd < 0) {
+                        fds[idx].fd = new_socket;
+                        fds[idx].events = POLLIN;
+                        slot_found = 1;
                         break;
                     }
+                }
+                if (slot_found == 0) {
+                    if (write(STDOUT_FILENO, "[Server] Prea multi clienti, conexiune refuzata.\n", TOO_MANY_CLIENTS_MSG_SIZE) < 0) {
+                        perror("write");
+                    }
+                    close(new_socket);
                 }
             }
         }
 
         // Citire date de la clientii conectati
-        for (int i = 1; i < MAX_CLIENTS; i++) {
-            if (fds[i].fd > 0 && (fds[i].revents & POLLIN)) {
-                char buffer[1024];
-                for (int j = 0; j < 1024; j++) buffer[j] = '\0';
+        for (int idx = 1; idx < MAX_CLIENTS; idx++) {
+            if (fds[idx].fd > 0 && (fds[idx].revents & POLLIN)) {
+                char buffer[CLIENT_BUFFER_SIZE];
+                for (int jdx = 0; jdx < CLIENT_BUFFER_SIZE; jdx++) {
+                    buffer[jdx] = '\0';
+                }
 
-                ssize_t bytes_read = recv(fds[i].fd, buffer, sizeof(buffer) - 1, 0);
+                ssize_t bytes_read = recv(fds[idx].fd, buffer, sizeof(buffer) - 1, 0);
                 
                 if (bytes_read <= 0) {
-                    write(STDOUT_FILENO, "[Server] Client deconectat.\n", 28);
-                    close(fds[i].fd);
-                    fds[i].fd = -1; 
+                    if (write(STDOUT_FILENO, "[Server] Client deconectat.\n", CLIENT_DISCONNECTED_MSG_SIZE) < 0) {
+                        perror("write");
+                    }
+                    close(fds[idx].fd);
+                    fds[idx].fd = -1;
                 } else {
-                    process_request_and_send(fds[i].fd, buffer);
+                    process_request_and_send(fds[idx].fd, buffer);
                 }
             }
         }
