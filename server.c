@@ -659,13 +659,17 @@ int main(void) {
     }
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    char msg_start[MESSAGE_BUFFER_SIZE];
-    int msg_len = snprintf(msg_start, sizeof(msg_start), "[Server] Ascult pe port %d...\n", port);
-    if (msg_len > 0 && msg_len < (int)sizeof(msg_start)) {
-        if (write(STDOUT_FILENO, msg_start, (size_t)msg_len) < 0) {
-            perror("Eroare la pornire");
-        }
-    }
+    // construim mesajul de pornire fara snprintf (evitam warning-ul de securitate)
+    char msg_start[64];
+    int mi = 0;
+    const char *ms1 = "[Server] Ascult pe port ";
+    for (int k = 0; ms1[k]; k++) msg_start[mi++] = ms1[k];
+    int tmp[10]; int ti = 0; int p = port;
+    if (p == 0) { msg_start[mi++] = '0'; }
+    else { while (p > 0) { tmp[ti++] = p % 10; p /= 10; } for (int k = ti - 1; k >= 0; k--) msg_start[mi++] = (char)('0' + tmp[k]); }
+    const char *ms2 = "...\n";
+    for (int k = 0; ms2[k]; k++) msg_start[mi++] = ms2[k];
+    if (write(STDOUT_FILENO, msg_start, (size_t)mi) < 0) perror("Eroare la pornire");
 
     // MULTIPLEXARE cu poll()
     struct pollfd fds[MAX_CLIENTS];
