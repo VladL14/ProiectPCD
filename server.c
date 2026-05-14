@@ -224,7 +224,7 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
         result.valid = 1;
         const char *src = "repology";
         i = 0;
-        while (src[i]) result.source[i] = src[i++];
+        while (src[i]) { result.source[i] = src[i]; i++; }
         result.source[i] = '\0';
  
         const char *ok = " -> OK (repology) v";
@@ -238,7 +238,7 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
         result.valid = 1;
         const char *src = "homebrew";
         i = 0;
-        while (src[i]) result.source[i] = src[i++];
+        while (src[i]) { result.source[i] = src[i]; i++; }
         result.source[i] = '\0';
  
         const char *ok = " -> OK (homebrew fallback) v";
@@ -251,7 +251,7 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
     else {
         const char *src = "not found";
         i = 0;
-        while (src[i]) result.source[i] = src[i++];
+        while (src[i]) { result.source[i] = src[i]; i++; }
         result.source[i] = '\0';
  
         const char *err = " -> ESUAT (404 pe ambele API-uri)\n";
@@ -567,11 +567,17 @@ int main() {
     listen(server_fd, 5);
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    char msg_start[128];
-    int n = snprintf(msg_start, sizeof(msg_start), "[Server] Ascult pe port %d...\n", port);
-    if (n > 0 && n < (int)sizeof(msg_start)) {
-        if (write(STDOUT_FILENO, msg_start, (size_t)n) < 0) perror("Eroare la pornire");
-    }
+    // construim mesajul de pornire fara snprintf (evitam warning-ul de securitate)
+    char msg_start[64];
+    int mi = 0;
+    const char *ms1 = "[Server] Ascult pe port ";
+    for (int k = 0; ms1[k]; k++) msg_start[mi++] = ms1[k];
+    int tmp[10]; int ti = 0; int p = port;
+    if (p == 0) { msg_start[mi++] = '0'; }
+    else { while (p > 0) { tmp[ti++] = p % 10; p /= 10; } for (int k = ti - 1; k >= 0; k--) msg_start[mi++] = (char)('0' + tmp[k]); }
+    const char *ms2 = "...\n";
+    for (int k = 0; ms2[k]; k++) msg_start[mi++] = ms2[k];
+    if (write(STDOUT_FILENO, msg_start, (size_t)mi) < 0) perror("Eroare la pornire");
 
     // MULTIPLEXARE cu poll()
     struct pollfd fds[MAX_CLIENTS];
