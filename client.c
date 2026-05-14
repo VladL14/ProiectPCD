@@ -65,8 +65,9 @@ static void load_env_file(const char *filename) {
                 value[len - 1] = '\0';
             }
 
-            // injectam variabila in mediul procesului curent
-            (void)setenv(key, value, 1);
+            if (setenv(key, value, 1) != 0) {
+                perror("setenv");
+            }
         }
     }
     if (fclose(file_ptr) != 0) {
@@ -108,15 +109,13 @@ int main(void) {
         return 1;
     }
 
-    // Afisam un mesaj de succes si verificam daca write ul se trimite(pentru a evita erorile de la build)
     if (write(STDOUT_FILENO, "[Client] Conectat cu succes la server.\n", SUCCESS_MSG_SIZE) < 0) {
-        perror("Eroare scriere consola");
+        perror("write");
     }
     // facem bucla pentru a nu se inchide clientul dupa o singura comanda
     while (1) {
-        // Afisam prompt ul custom care sa se afiseze la fiecare pas ca la o tema anterioara
         if (write(STDOUT_FILENO, "comanda:> ", PROMPT_SIZE) < 0) {
-            perror("Eroare afisare prompt");
+            perror("write");
         }
         
         char input[BUFFER_SIZE];
@@ -158,12 +157,11 @@ int main(void) {
             idx++;
         }
 
-        // Folosim strtok pentru a sparge linia citita de la tastatura
-        char *token = strtok(input, " ");
+        char *saveptr;
+        char *token = strtok_r(input, " ", &saveptr);
         while (token != NULL) {
-            // Daca gasim --dep in comanda data luam urmatorul cuvant si il lipim in payload sub forma D:pachet
             if (strcmp(token, "--dep") == 0) {
-                token = strtok(NULL, " ");
+                token = strtok_r(NULL, " ", &saveptr);
                 if (token) {
                     payload[payload_len++] = 'D';
                     payload[payload_len++] = ':';
@@ -174,9 +172,8 @@ int main(void) {
                     payload[payload_len++] = ' ';
                 }
             }
-            // Daca gasim --env il convertim in E:variabila
             else if (strcmp(token, "--env") == 0) {
-                token = strtok(NULL, " ");
+                token = strtok_r(NULL, " ", &saveptr);
                 if (token) {
                     payload[payload_len++] = 'E';
                     payload[payload_len++] = ':';
@@ -187,9 +184,8 @@ int main(void) {
                     payload[payload_len++] = ' ';
                 }
             }
-            // Daca gasim --copy il convertim in C:fisier
             else if (strcmp(token, "--copy") == 0) {
-                token = strtok(NULL, " ");
+                token = strtok_r(NULL, " ", &saveptr);
                 if (token) {
                     payload[payload_len++] = 'C';
                     payload[payload_len++] = ':';
@@ -200,9 +196,8 @@ int main(void) {
                     payload[payload_len++] = ' ';
                 }
             }
-            // Daca utilizatorul a specificat --out, suprascriem numele default al fisierului
             else if (strcmp(token, "--out") == 0) {
-                token = strtok(NULL, " ");
+                token = strtok_r(NULL, " ", &saveptr);
                 if (token) {
                     int jdx = 0;
                     while (token[jdx]) {
@@ -212,19 +207,20 @@ int main(void) {
                     output_file[jdx] = '\0';
                 }
             }
-            token = strtok(NULL, " "); // mergem la urmatorul token din input
+            token = strtok_r(NULL, " ", &saveptr);
         }
 
-        // daca nu baga niciun parametru valid
         if (payload_len == 0) {
             if (write(STDOUT_FILENO, "Comanda invalida/goala. In cazul in care doriti sa generati un Dockerfile, se recomanda folosirea structurii --dep x --env y --copy z\n", INVALID_CMD_MSG_SIZE) < 0) {
-                perror("Eroare scriere");
+                perror("write");
             }
             continue;
         }
 
-        // Trimitem tot sirul format catre server
-        (void)send(sockfd, payload, payload_len, 0);
+        if (send(sockfd, payload, payload_len, 0) < 0) {
+            perror("send");
+            continue;
+        }
 
         // Deschidem fisierul in care vom salva dockerfile ul primit
         int file_desc = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, FILE_PERMISSIONS);
@@ -248,18 +244,18 @@ int main(void) {
                 bytes_received = eof_ptr - buffer;//calculam fix cate caractere sunt inainte de eof ca sa nu scriem pe disk
             }
             
-            // Daca avem caractere reale pentru dockerfile le scriem pe disk
             if (bytes_received > 0) {
                 if (write(file_desc, buffer, (size_t)bytes_received) < 0) {
-                    perror("Eroare la scrierea in fisier");
+                    perror("write");
+                    break;
                 }
             }
         }
         
-        close(file_desc); // Inchidem fisierul de pe disk
+        close(file_desc);
         
         if (write(STDOUT_FILENO, "[Client] Dockerfile primit si asamblat cu succes.\n", FINAL_MSG_SIZE) < 0) {
-            perror("Eroare scriere consola finala");
+            perror("write");
         }
     }
 

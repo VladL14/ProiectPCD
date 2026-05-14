@@ -311,7 +311,9 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
             idx++;
         }
         log[log_idx++] = '\n';
-        (void)write(STDOUT_FILENO, log, (size_t)log_idx);
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
     //Fallback homebrew
     else if (check_via_homebrew(dep_name, result.version, sizeof(result.version))) {
@@ -338,7 +340,9 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
             idx++;
         }
         log[log_idx++] = '\n';
-        (void)write(STDOUT_FILENO, log, (size_t)log_idx);
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
     //Esec total
     else {
@@ -357,11 +361,14 @@ static void child_check_dep(const char *dep_name, int pipe_fd) {
             log_idx++;
             idx++;
         }
-        (void)write(STDOUT_FILENO, log, (size_t)log_idx);
+        if (write(STDOUT_FILENO, log, (size_t)log_idx) < 0) {
+            perror("write");
+        }
     }
  
-    // Trimitem struct-ul rezultat parintelui prin pipe
-    (void)write(pipe_fd, &result, sizeof(DepResult));
+    if (write(pipe_fd, &result, sizeof(DepResult)) < 0) {
+        perror("write");
+    }
     close(pipe_fd);
 }
 
@@ -466,7 +473,9 @@ static void process_request_and_send(int client_fd, const char *request) {
     for (int idx = 0; idx < dep_count; idx++) {
         if (pids[idx] > 0) {
             int status;
-            (void)waitpid(pids[idx], &status, 0);
+            if (waitpid(pids[idx], &status, 0) < 0) {
+                perror("waitpid");
+            }
             ssize_t bytes_read = read(pipe_fds[idx][0], &results[idx], sizeof(DepResult));
             if (bytes_read != sizeof(DepResult)) {
                 results[idx].valid = 0;
@@ -489,41 +498,40 @@ static void process_request_and_send(int client_fd, const char *request) {
         config_lookup_string(&cfg, "container.workdir", &workdir);
     }
 
-    // PASUL 2D: ASAMBLAREA DOCKERFILE-ULUI
-    (void)send(client_fd, "FROM ", FROM_LABEL_SIZE, 0);
-    (void)send(client_fd, base_image, custom_len(base_image), 0);
-    (void)send(client_fd, "\nLABEL maintainer=\"", LABEL_MAINTAINER_SIZE, 0);
-    (void)send(client_fd, maintainer, custom_len(maintainer), 0);
-    (void)send(client_fd, "\"\nWORKDIR ", WORKDIR_PREFIX_SIZE, 0);
-    (void)send(client_fd, workdir, custom_len(workdir), 0);
-    (void)send(client_fd, "\n\n", 2, 0);
+    send(client_fd, "FROM ", FROM_LABEL_SIZE, 0);
+    send(client_fd, base_image, custom_len(base_image), 0);
+    send(client_fd, "\nLABEL maintainer=\"", LABEL_MAINTAINER_SIZE, 0);
+    send(client_fd, maintainer, custom_len(maintainer), 0);
+    send(client_fd, "\"\nWORKDIR ", WORKDIR_PREFIX_SIZE, 0);
+    send(client_fd, workdir, custom_len(workdir), 0);
+    send(client_fd, "\n\n", 2, 0);
 
     for (int idx = 0; idx < env_count; idx++) {
-        (void)send(client_fd, "ENV ", 4, 0);
-        (void)send(client_fd, envs[idx], custom_len(envs[idx]), 0);
-        (void)send(client_fd, "\n", 1, 0);
+        send(client_fd, "ENV ", 4, 0);
+        send(client_fd, envs[idx], custom_len(envs[idx]), 0);
+        send(client_fd, "\n", 1, 0);
     }
     if (env_count > 0) {
-        (void)send(client_fd, "\n", 1, 0);
+        send(client_fd, "\n", 1, 0);
     }
 
     for (int idx = 0; idx < copy_count; idx++) {
-        (void)send(client_fd, "COPY ", COPY_PREFIX_SIZE, 0);
-        (void)send(client_fd, copies[idx], custom_len(copies[idx]), 0);
-        (void)send(client_fd, "\n", 1, 0);
+        send(client_fd, "COPY ", COPY_PREFIX_SIZE, 0);
+        send(client_fd, copies[idx], custom_len(copies[idx]), 0);
+        send(client_fd, "\n", 1, 0);
     }
     if (copy_count > 0) {
-        (void)send(client_fd, "\n", 1, 0);
+        send(client_fd, "\n", 1, 0);
     }
 
     if (dep_count > 0) {
         const char *run_start = "RUN apt-get update && apt-get install -y \\\n";
-        (void)send(client_fd, run_start, custom_len(run_start), 0);
+        send(client_fd, run_start, custom_len(run_start), 0);
         
         for (int idx = 0; idx < dep_count; idx++) {
             if (results[idx].valid) {
-                (void)send(client_fd, "    ", 4, 0);
-                (void)send(client_fd, deps[idx], custom_len(deps[idx]), 0);
+                send(client_fd, "    ", 4, 0);
+                send(client_fd, deps[idx], custom_len(deps[idx]), 0);
                 if (results[idx].version[0] != '\0') {
                     char ver_comment[VERSION_COMMENT_SIZE];
                     // construim " \  # v<version> (<source>)\n"
@@ -546,26 +554,25 @@ static void process_request_and_send(int client_fd, const char *request) {
                     ver_comment[ver_idx++] = ')';
                     ver_comment[ver_idx++] = '\n';
                     ver_comment[ver_idx] = '\0';
-                    (void)send(client_fd, ver_comment, (size_t)ver_idx, 0);
+                    send(client_fd, ver_comment, (size_t)ver_idx, 0);
                 } else {
-                    (void)send(client_fd, " \\\n", 3, 0);
+                    send(client_fd, " \\\n", 3, 0);
                 }
             } else {
-                (void)send(client_fd, "    # ESUAT: ", FAILED_PREFIX_SIZE, 0);
-                (void)send(client_fd, deps[idx], custom_len(deps[idx]), 0);
-                (void)send(client_fd, " (Lipseste din repozitoriu)\n", FAILED_SUFFIX_SIZE, 0);
+                send(client_fd, "    # ESUAT: ", FAILED_PREFIX_SIZE, 0);
+                send(client_fd, deps[idx], custom_len(deps[idx]), 0);
+                send(client_fd, " (Lipseste din repozitoriu)\n", FAILED_SUFFIX_SIZE, 0);
             }
         }
         const char *run_end = "    && apt-get clean \\\n    && rm -rf /var/lib/apt/lists/*\n\n";
-        (void)send(client_fd, run_end, custom_len(run_end), 0);
+        send(client_fd, run_end, custom_len(run_end), 0);
     }
 
     const char *footer = "CMD [\"/bin/bash\"]\n";
-    (void)send(client_fd, footer, custom_len(footer), 0);
+    send(client_fd, footer, custom_len(footer), 0);
 
-    // Marker-ul pentru a spune clientului ca s-a terminat fisierul
     const char *eof_marker = "\n===EOF===\n";
-    (void)send(client_fd, eof_marker, custom_len(eof_marker), 0);
+    send(client_fd, eof_marker, custom_len(eof_marker), 0);
 
     config_destroy(&cfg);
 }
@@ -597,7 +604,9 @@ static void load_env_file(const char *filename) {
                 value[len - 1] = '\0';
             }
 
-            (void)setenv(key, value, 1);
+            if (setenv(key, value, 1) != 0) {
+                perror("setenv");
+            }
         }
     }
     if (fclose(file_ptr) != 0) {
@@ -626,7 +635,9 @@ int main(void) {
     }
 
     int opt = 1;
-    (void)setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+    }
 
     struct sockaddr_in address;
     address.sin_family      = AF_INET;
@@ -641,7 +652,11 @@ int main(void) {
         return 1;
     }
 
-    (void)listen(server_fd, LISTEN_BACKLOG);
+    if (listen(server_fd, LISTEN_BACKLOG) < 0) {
+        perror("listen");
+        close(server_fd);
+        return 1;
+    }
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     char msg_start[MESSAGE_BUFFER_SIZE];
@@ -674,7 +689,9 @@ int main(void) {
             int new_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
             
             if (new_socket >= 0) {
-                (void)write(STDOUT_FILENO, "[Server] Client nou conectat.\n", CLIENT_CONNECTED_MSG_SIZE);
+                if (write(STDOUT_FILENO, "[Server] Client nou conectat.\n", CLIENT_CONNECTED_MSG_SIZE) < 0) {
+                    perror("write");
+                }
                 int slot_found = 0;
                 for (int idx = 1; idx < MAX_CLIENTS; idx++) {
                     if (fds[idx].fd < 0) {
@@ -685,7 +702,9 @@ int main(void) {
                     }
                 }
                 if (slot_found == 0) {
-                    (void)write(STDOUT_FILENO, "[Server] Prea multi clienti, conexiune refuzata.\n", TOO_MANY_CLIENTS_MSG_SIZE);
+                    if (write(STDOUT_FILENO, "[Server] Prea multi clienti, conexiune refuzata.\n", TOO_MANY_CLIENTS_MSG_SIZE) < 0) {
+                        perror("write");
+                    }
                     close(new_socket);
                 }
             }
@@ -702,7 +721,9 @@ int main(void) {
                 ssize_t bytes_read = recv(fds[idx].fd, buffer, sizeof(buffer) - 1, 0);
                 
                 if (bytes_read <= 0) {
-                    (void)write(STDOUT_FILENO, "[Server] Client deconectat.\n", CLIENT_DISCONNECTED_MSG_SIZE);
+                    if (write(STDOUT_FILENO, "[Server] Client deconectat.\n", CLIENT_DISCONNECTED_MSG_SIZE) < 0) {
+                        perror("write");
+                    }
                     close(fds[idx].fd);
                     fds[idx].fd = -1;
                 } else {

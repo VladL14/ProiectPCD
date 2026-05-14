@@ -35,8 +35,9 @@
 static void send_command_to_server(int sockfd, struct sockaddr_in *server_addr, const char *command, char *response_buffer, int max_len) {
     socklen_t addr_len = sizeof(*server_addr);
     
-    // aruncam comanda pe retea spre server
-    (void)sendto(sockfd, command, strlen(command), 0, (struct sockaddr *)server_addr, addr_len);
+    if (sendto(sockfd, command, strlen(command), 0, (struct sockaddr *)server_addr, addr_len) < 0) {
+        perror("sendto");
+    }
 
     // punem doar un caracter nul pe prima pozitie in loc sa stergem tot buffer ul
     // e de ajuns daca punem terminatorul la final dupa ce citim datele
@@ -46,7 +47,8 @@ static void send_command_to_server(int sockfd, struct sockaddr_in *server_addr, 
     ssize_t bytes_received = recvfrom(sockfd, response_buffer, (size_t)(max_len - 1), 0, (struct sockaddr *)server_addr, &addr_len);
     
     if (bytes_received < 0) {
-        (void)strcpy(response_buffer, "Eroare: Serverul nu a raspuns sau este offline");
+        strncpy(response_buffer, "Eroare: Serverul nu a raspuns sau este offline", (size_t)(max_len - 1));
+        response_buffer[max_len - 1] = '\0';
     } else {
         response_buffer[bytes_received] = '\0';
     }
@@ -64,7 +66,9 @@ int main(void) {
     struct timeval timeout_val;
     timeout_val.tv_sec = TIMEOUT_SECONDS;
     timeout_val.tv_usec = 0;
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_val, sizeof(timeout_val));
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_val, sizeof(timeout_val)) < 0) {
+        perror("setsockopt");
+    }
 
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
@@ -76,11 +80,26 @@ int main(void) {
         server_addr.sin_zero[idx] = '\0';
     }
 
-    // acum trecem la pornirea librariei ncurses
-    (void)initscr();            // intram in modul vizual
-    (void)cbreak();             // oprim buffer ul pe linii
-    (void)noecho();             // ascundem ce tasteaza utilizatorul in mod normal
-    (void)keypad(stdscr, TRUE); // ne asiguram ca ne merg sagetile directionale de pe tastatura
+    if (initscr() == NULL) {
+        perror("initscr");
+        close(sockfd);
+        return 1;
+    }
+    if (cbreak() == ERR) {
+        endwin();
+        close(sockfd);
+        return 1;
+    }
+    if (noecho() == ERR) {
+        endwin();
+        close(sockfd);
+        return 1;
+    }
+    if (keypad(stdscr, TRUE) == ERR) {
+        endwin();
+        close(sockfd);
+        return 1;
+    }
 
     int choice = 0;
     const char *options[MAX_CHOICES] = {
@@ -91,30 +110,29 @@ int main(void) {
     };
 
     char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
-    (void)strcpy(response_buffer, "Bine ai venit in Panoul de Administrare.\nApasa Enter pe o optiune pentru a interoga serverul.");
+    strncpy(response_buffer, "Bine ai venit in Panoul de Administrare.\nApasa Enter pe o optiune pentru a interoga serverul.", RESPONSE_BUFFER_SIZE - 1);
+    response_buffer[RESPONSE_BUFFER_SIZE - 1] = '\0';
 
     int running = 1;
 
     while (running) {
-        (void)clear(); // stergem tot ce e pe ecran la fiecare pas
+        clear();
         
-        // punem si noi un titlu dragut sus
-        (void)mvprintw(TITLE_ROW, COLUMN_OFFSET, "=== Dockerfile Generator - Admin Panel ===");
-        (void)mvprintw(SUBTITLE_ROW, COLUMN_OFFSET, "Foloseste sagetile pentru a naviga. Enter pentru a selecta.");
+        mvprintw(TITLE_ROW, COLUMN_OFFSET, "=== Dockerfile Generator - Admin Panel ===");
+        mvprintw(SUBTITLE_ROW, COLUMN_OFFSET, "Foloseste sagetile pentru a naviga. Enter pentru a selecta.");
 
         // incepem sa desenam fiecare optiune din meniu
         for (int idx = 0; idx < MAX_CHOICES; idx++) {
             if (idx == choice) {
-                (void)attron(A_REVERSE); // facem optiunea sa iasa in evidenta cand e selectata
-                (void)mvprintw(MENU_START_ROW + idx, MENU_COLUMN_OFFSET, "%s", options[idx]);
-                (void)attroff(A_REVERSE);
+                attron(A_REVERSE);
+                mvprintw(MENU_START_ROW + idx, MENU_COLUMN_OFFSET, "%s", options[idx]);
+                attroff(A_REVERSE);
             } else {
-                (void)mvprintw(MENU_START_ROW + idx, MENU_COLUMN_OFFSET, "%s", options[idx]);
+                mvprintw(MENU_START_ROW + idx, MENU_COLUMN_OFFSET, "%s", options[idx]);
             }
         }
 
-        // aici pregatim o zona separata unde sa vedem ce ne zice serverul inapoi
-        (void)mvprintw(RESPONSE_TITLE_ROW, COLUMN_OFFSET, "--- Raspuns Server ---");
+        mvprintw(RESPONSE_TITLE_ROW, COLUMN_OFFSET, "--- Raspuns Server ---");
         
         // printam manual litera cu litera pe ecran ca sa facem un fel de auto incadrare pe randuri
         int line = RESPONSE_START_ROW;
@@ -124,7 +142,7 @@ int main(void) {
                 line++;
                 col = COLUMN_OFFSET;
             } else {
-                (void)mvaddch(line, col, response_buffer[idx]);
+                mvaddch(line, col, response_buffer[idx]);
                 col++;
             }
             // cand ajungem la capatul liniei ne mutam cursorul mai jos cu un rand
@@ -134,7 +152,7 @@ int main(void) {
             }
         }
 
-        (void)refresh(); // dam un refresh sa apara pe ecran ce am desenat
+        refresh();
 
         // stam sa vedem ce apasa omul pe tastatura
         int key_pressed = getch();
@@ -175,8 +193,7 @@ int main(void) {
         }
     }
 
-    // la final facem curatenie si inchidem totul
-    (void)endwin(); // oprim modul vizual si ne intoarcem la terminalul normal
+    endwin();
     close(sockfd);
 
     return 0;
