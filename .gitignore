@@ -1,6 +1,13 @@
 build/
 client
 server
+server_asan
+admin
 Dockerfile.gen
 test.Dockfile
 .env
+__pycache__/
+*.pyc
+uploads/
+*.log
+test_upload.txt

@@ -5,44 +5,30 @@
  */
 
 #include <stdio.h>       // perror
-#include <stdlib.h>      // functii de baza standard
+#include <stdlib.h>      // functii de baza standard 
 #include <unistd.h>      // read, write, close
 #include <fcntl.h>       //  O_WRONLY, O_CREAT, O_TRUNC
+#include <sys/stat.h>    // stat() pentru dimensiunea fisierului la upload
 #include <string.h>      // strcmp,strtok
 #include <sys/socket.h>  // socket, connect, send, recv
 #include <netinet/in.h>  // pentru familiile de adrese si structurile de porturi (sockaddr_in)
 #include <arpa/inet.h>   // pentru inet_addr, converteste adresa ip in format de retea
 
-#define BUFFER_SIZE 1024
-#define ENV_LINE_SIZE 256
-#define OUTPUT_FILE_SIZE 256
-#define DEFAULT_PORT 8080
-#define DECIMAL_BASE 10
-#define SIN_ZERO_SIZE 8
-#define PROMPT_SIZE 11
-#define SUCCESS_MSG_SIZE 39
-#define INVALID_CMD_MSG_SIZE 135
-#define FINAL_MSG_SIZE 50
-#define READ_SIZE 1023
-#define FILE_PERMISSIONS 0644
-
 // functie ca sa inlocuim strlen
-static size_t custom_len(const char *str) {
-    size_t idx = 0;
-    while (str[idx] != '\0') {
-        idx++;
-    }
-    return idx;
+size_t custom_len(const char *str) {
+    size_t i = 0;
+    while (str[i] != '\0') i++;
+    return i;
 }
 
-static void load_env_file(const char *filename) {
-    FILE *file_ptr = fopen(filename, "r");
-    if (file_ptr == NULL) {
+void load_env_file(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
         return; // daca nu exista .env, mergem pe valorile default din cod
     }
 
-    char line[ENV_LINE_SIZE];
-    while (fgets(line, sizeof(line), file_ptr) != NULL) {
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
         // ignoram liniile goale sau comentariile
         if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
             continue;
@@ -57,36 +43,29 @@ static void load_env_file(const char *filename) {
 
             // eliminam newline-ul de la finalul valorii (\n sau \r\n)
             size_t len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\n') {
-                value[len - 1] = '\0';
-            }
+            if (len > 0 && value[len - 1] == '\n') value[len - 1] = '\0';
             len = custom_len(value);
-            if (len > 0 && value[len - 1] == '\r') {
-                value[len - 1] = '\0';
-            }
+            if (len > 0 && value[len - 1] == '\r') value[len - 1] = '\0';
 
-            if (setenv(key, value, 1) != 0) {
-                perror("setenv");
-            }
+            // injectam variabila in mediul procesului curent
+            setenv(key, value, 1);
         }
     }
-    if (fclose(file_ptr) != 0) {
-        perror("fclose");
-    }
+    fclose(fp);
 }
 
-int main(void) {
+int main() {
     // incarcam variabilele din .env
     load_env_file(".env");
 
     // citim portul unde trebuie sa ne conectam
-    int port = DEFAULT_PORT; // portul default (fallback)
+    int port = 8080; // portul default (fallback)
     char *env_port = getenv("SERVER_PORT");
     if (env_port != NULL) {
-        port = (int)strtol(env_port, NULL, DECIMAL_BASE);
+        port = (int)strtol(env_port, NULL, 10);
     }
 
-    // Cream un socket
+    // Cream un socket 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("Eroare la creare socket");
@@ -98,9 +77,7 @@ int main(void) {
     server_addr.sin_family = AF_INET; // adresa ipv4
     server_addr.sin_port = htons((uint16_t)port); // setam portul 8080 si se converteste cu htons in format de retea
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ne conectam la ocalhost
-    for (int idx = 0; idx < SIN_ZERO_SIZE; idx++) {
-        server_addr.sin_zero[idx] = '\0'; // Curatam restul structurii
-    }
+    for (int i = 0; i < 8; i++) server_addr.sin_zero[i] = '\0'; // Curatam restul structurii
 
     // Incercam sa stabilim conexiunea cu serverul
     if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
@@ -109,132 +86,300 @@ int main(void) {
         return 1;
     }
 
-    if (write(STDOUT_FILENO, "[Client] Conectat cu succes la server.\n", SUCCESS_MSG_SIZE) < 0) {
-        perror("write");
+    // Afisam un mesaj de succes si verificam daca write ul se trimite(pentru a evita erorile de la build)
+    if (write(STDOUT_FILENO, "[Client] Conectat cu succes la server.\n", 39) < 0) {
+        perror("Eroare scriere consola");
     }
     // facem bucla pentru a nu se inchide clientul dupa o singura comanda
     while (1) {
-        if (write(STDOUT_FILENO, "comanda:> ", PROMPT_SIZE) < 0) {
-            perror("write");
+        // Afisam prompt ul custom care sa se afiseze la fiecare pas ca la o tema anterioara
+        if (write(STDOUT_FILENO, "comanda:> ", 11) < 0) {
+            perror("Eroare afisare prompt");
         }
         
-        char input[BUFFER_SIZE];
-        for (int idx = 0; idx < BUFFER_SIZE; idx++) {
-            input[idx] = '\0';
-        }
+        char input[1024];
+        for (int i = 0; i < 1024; i++) input[i] = '\0';
 
         // Citim de la tastatura ce scrie utilizatorul
-        ssize_t bytes_read = read(STDIN_FILENO, input, READ_SIZE);
-        if (bytes_read <= 0) {
-            break;
-        }
-        input[bytes_read - 1] = '\0'; // Inlocuim enter ul de la final cu terminatorul
+        ssize_t n = read(STDIN_FILENO, input, 1023);
+        if (n <= 0) break; 
+        input[n - 1] = '\0'; // Inlocuim enter ul de la final cu terminatorul
 
         // Daca utilizatorul scrie exit inchidem terminalul clientului
-        if (strcmp(input, "exit") == 0) {
-            break;
-        }
-        if (input[0] == '\0') {
-            continue; // daca da enter in gol nu se intampla nimic
-        }
+        if (strcmp(input, "exit") == 0) break;
+        if (input[0] == '\0') continue; // daca da enter in gol nu se intampla nimic
 
-        char payload[BUFFER_SIZE]; // construim mesajul pe care il trimitem in retea
-        for (int idx = 0; idx < BUFFER_SIZE; idx++) {
-            payload[idx] = '\0';
-        }
+        char payload[1024]; // construim mesajul pe care il trimitem in retea
+        for (int i = 0; i < 1024; i++) payload[i] = '\0';
         size_t payload_len = 0;
 
-        char output_file[OUTPUT_FILE_SIZE];
-        for (int idx = 0; idx < OUTPUT_FILE_SIZE; idx++) {
-            output_file[idx] = '\0';
-        }
-        
+        char output_file[256];
+        for (int i = 0; i < 256; i++) output_file[i] = '\0';
+
         // Fisierul in care salvam dockerfile ul este by default "Dockerfile.gen"
-        const char default_out[] = "Dockerfile.gen";
+        char default_out[] = "Dockerfile.gen";
         int idx = 0;
-        while (default_out[idx]) {
-            output_file[idx] = default_out[idx];
-            idx++;
-        }
+        while (default_out[idx]) { output_file[idx] = default_out[idx]; idx++; }
 
-        char *saveptr;
-        char *token = strtok_r(input, " ", &saveptr);
+        char upload_path[256];   // cale locala spre fisierul de incarcat pe server
+        for (int i = 0; i < 256; i++) upload_path[i] = '\0';
+
+        char get_filename[256];  // numele fisierului de descarcat de pe server
+        for (int i = 0; i < 256; i++) get_filename[i] = '\0';
+
+        int  do_list = 0;          // --list: cere lista fisierelor de pe server
+        char delete_filename[256]; // --delete <nume>: sterge un fisier de pe server
+        for (int i = 0; i < 256; i++) delete_filename[i] = '\0';
+
+        // Folosim strtok pentru a sparge linia citita de la tastatura 
+        char *token = strtok(input, " ");
         while (token != NULL) {
+            // Daca gasim --dep in comanda data luam urmatorul cuvant si il lipim in payload sub forma D:pachet
             if (strcmp(token, "--dep") == 0) {
-                token = strtok_r(NULL, " ", &saveptr);
+                token = strtok(NULL, " "); 
                 if (token) {
-                    payload[payload_len++] = 'D';
-                    payload[payload_len++] = ':';
-                    int jdx = 0;
-                    while (token[jdx]) {
-                        payload[payload_len++] = token[jdx++];
-                    }
-                    payload[payload_len++] = ' ';
+                    payload[payload_len++] = 'D'; payload[payload_len++] = ':'; 
+                    int j = 0; while (token[j]) payload[payload_len++] = token[j++];
+                    payload[payload_len++] = ' '; 
                 }
-            }
+            } 
+            // Daca gasim --env il convertim in E:variabila
             else if (strcmp(token, "--env") == 0) {
-                token = strtok_r(NULL, " ", &saveptr);
+                token = strtok(NULL, " ");
                 if (token) {
-                    payload[payload_len++] = 'E';
-                    payload[payload_len++] = ':';
-                    int jdx = 0;
-                    while (token[jdx]) {
-                        payload[payload_len++] = token[jdx++];
-                    }
+                    payload[payload_len++] = 'E'; payload[payload_len++] = ':'; 
+                    int j = 0; while (token[j]) payload[payload_len++] = token[j++];
                     payload[payload_len++] = ' ';
                 }
-            }
+            } 
+            // Daca gasim --copy il convertim in C:fisier
             else if (strcmp(token, "--copy") == 0) {
-                token = strtok_r(NULL, " ", &saveptr);
+                token = strtok(NULL, " ");
                 if (token) {
-                    payload[payload_len++] = 'C';
-                    payload[payload_len++] = ':';
-                    int jdx = 0;
-                    while (token[jdx]) {
-                        payload[payload_len++] = token[jdx++];
-                    }
+                    payload[payload_len++] = 'C'; payload[payload_len++] = ':'; 
+                    int j = 0; while (token[j]) payload[payload_len++] = token[j++];
                     payload[payload_len++] = ' ';
                 }
-            }
+            } 
+            // Daca utilizatorul a specificat --out, suprascriem numele default al fisierului
             else if (strcmp(token, "--out") == 0) {
-                token = strtok_r(NULL, " ", &saveptr);
+                token = strtok(NULL, " ");
                 if (token) {
-                    int jdx = 0;
-                    while (token[jdx]) {
-                        output_file[jdx] = token[jdx];
-                        jdx++;
-                    }
-                    output_file[jdx] = '\0';
+                    int j = 0; while (token[j]) { output_file[j] = token[j]; j++; }
+                    output_file[j] = '\0';
                 }
             }
-            token = strtok_r(NULL, " ", &saveptr);
+            // --upload <cale> : incarca un fisier local pe server
+            else if (strcmp(token, "--upload") == 0) {
+                token = strtok(NULL, " ");
+                if (token) {
+                    int j = 0; while (token[j] && j < 255) { upload_path[j] = token[j]; j++; }
+                    upload_path[j] = '\0';
+                }
+            }
+            // --get <nume> : descarca un fisier de pe server
+            else if (strcmp(token, "--get") == 0) {
+                token = strtok(NULL, " ");
+                if (token) {
+                    int j = 0; while (token[j] && j < 255) { get_filename[j] = token[j]; j++; }
+                    get_filename[j] = '\0';
+                }
+            }
+            // --list : cere lista fisierelor din uploads/ de pe server
+            else if (strcmp(token, "--list") == 0) {
+                do_list = 1;
+            }
+            // --delete <nume> : sterge un fisier de pe server
+            else if (strcmp(token, "--delete") == 0) {
+                token = strtok(NULL, " ");
+                if (token) {
+                    int j = 0; while (token[j] && j < 255) { delete_filename[j] = token[j]; j++; }
+                    delete_filename[j] = '\0';
+                }
+            }
+            token = strtok(NULL, " "); // mergem la urmatorul token din input
         }
 
-        if (payload_len == 0) {
-            if (write(STDOUT_FILENO, "Comanda invalida/goala. In cazul in care doriti sa generati un Dockerfile, se recomanda folosirea structurii --dep x --env y --copy z\n", INVALID_CMD_MSG_SIZE) < 0) {
-                perror("write");
+        // --- upload: trimitem un fisier local catre server ---
+        if (upload_path[0] != '\0') {
+            struct stat st;
+            if (stat(upload_path, &st) < 0) {
+                perror("Eroare stat fisier upload");
+                continue;
+            }
+            long file_size = (long)st.st_size;
+
+            // extragem basename-ul (ultimul segment dupa '/')
+            const char *basename = upload_path;
+            for (int i = 0; upload_path[i]; i++) {
+                if (upload_path[i] == '/') basename = upload_path + i + 1;
+            }
+
+            // construim header-ul "UPLOAD:basename:size"
+            char header[400];
+            int hi = 0;
+            const char *pfx = "UPLOAD:";
+            for (int i = 0; pfx[i]; i++)     header[hi++] = pfx[i];
+            for (int i = 0; basename[i]; i++) header[hi++] = basename[i];
+            header[hi++] = ':';
+            // convertim file_size in sir de caractere manual
+            if (file_size == 0) {
+                header[hi++] = '0';
+            } else {
+                char digits[32]; int di = 0; long sz = file_size;
+                while (sz > 0) { digits[di++] = (char)('0' + (sz % 10)); sz /= 10; }
+                for (int i = di - 1; i >= 0; i--) header[hi++] = digits[i];
+            }
+            header[hi] = '\0';
+
+            send(sockfd, header, (size_t)hi, 0);
+
+            // streamam continutul fisierului in bucati
+            int ufd = open(upload_path, O_RDONLY);
+            if (ufd < 0) {
+                perror("Eroare la deschidere fisier upload");
+                continue;
+            }
+            char chunk[4096];
+            ssize_t cn;
+            while ((cn = read(ufd, chunk, sizeof(chunk))) > 0) {
+                send(sockfd, chunk, (size_t)cn, 0);
+            }
+            close(ufd);
+
+            // asteptam raspunsul serverului pana la ===EOF===
+            char rbuf[1024];
+            ssize_t rb;
+            int eof_found = 0;
+            while (!eof_found && (rb = recv(sockfd, rbuf, 1023, 0)) > 0) {
+                rbuf[rb] = '\0';
+                if (strstr(rbuf, "===EOF===")) eof_found = 1;
+            }
+            if (eof_found) {
+                if (write(STDOUT_FILENO, "[Client] Fisier incarcat cu succes pe server.\n", 46) < 0)
+                    perror("Eroare scriere consola");
             }
             continue;
         }
 
-        if (send(sockfd, payload, payload_len, 0) < 0) {
-            perror("send");
+        // --- download: cerem un fisier de pe server ---
+        if (get_filename[0] != '\0') {
+            char dl_req[300];
+            int ri = 0;
+            const char *dpfx = "DOWNLOAD:";
+            for (int i = 0; dpfx[i]; i++)         dl_req[ri++] = dpfx[i];
+            for (int i = 0; get_filename[i]; i++)  dl_req[ri++] = get_filename[i];
+            dl_req[ri] = '\0';
+            send(sockfd, dl_req, (size_t)ri, 0);
+
+            int fd = open(get_filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("Eroare la crearea fisierului descarcat");
+                // golim raspunsul ca sa nu stricam protocolul
+                char rbuf[1024]; ssize_t rb;
+                while ((rb = recv(sockfd, rbuf, 1023, 0)) > 0) {
+                    rbuf[rb] = '\0';
+                    if (strstr(rbuf, "===EOF===")) break;
+                }
+                continue;
+            }
+
+            char buffer_dl[1024];
+            ssize_t bytes_dl;
+            int eof_dl = 0;
+            int is_err = -1; // -1 = necunoscut, 0 = ok, 1 = eroare
+            while (!eof_dl && (bytes_dl = recv(sockfd, buffer_dl, 1023, 0)) > 0) {
+                buffer_dl[bytes_dl] = '\0';
+                if (is_err == -1)
+                    is_err = (strncmp(buffer_dl, "ERR:", 4) == 0) ? 1 : 0;
+                char *eof_ptr = strstr(buffer_dl, "===EOF===");
+                if (eof_ptr) { eof_dl = 1; bytes_dl = eof_ptr - buffer_dl; }
+                if (bytes_dl > 0) {
+                    if (is_err == 1)
+                        write(STDOUT_FILENO, buffer_dl, bytes_dl);
+                    else
+                        write(fd, buffer_dl, bytes_dl);
+                }
+            }
+            close(fd);
+            if (is_err == 1) {
+                // stergem fisierul gol creat
+                unlink(get_filename);
+                write(STDOUT_FILENO, "\n", 1);
+            } else if (eof_dl) {
+                if (write(STDOUT_FILENO, "[Client] Fisier descarcat cu succes.\n", 37) < 0)
+                    perror("Eroare scriere consola");
+            }
             continue;
         }
+
+        // --- list: cerem lista fisierelor din uploads/ ---
+        if (do_list) {
+            send(sockfd, "LIST", 4, 0);
+
+            char rbuf[1024];
+            ssize_t rb;
+            if (write(STDOUT_FILENO, "[Client] Fisiere pe server:\n", 28) < 0)
+                perror("Eroare scriere");
+            while ((rb = recv(sockfd, rbuf, 1023, 0)) > 0) {
+                rbuf[rb] = '\0';
+                char *eof_ptr = strstr(rbuf, "===EOF===");
+                if (eof_ptr) { rb = eof_ptr - rbuf; }
+                if (rb > 0 && write(STDOUT_FILENO, rbuf, rb) < 0)
+                    perror("Eroare scriere");
+                if (eof_ptr) break;
+            }
+            continue;
+        }
+
+        // --- delete: stergem un fisier de pe server ---
+        if (delete_filename[0] != '\0') {
+            char del_req[280];
+            int ri = 0;
+            const char *pfx = "DELETE:";
+            for (int i = 0; pfx[i]; i++) del_req[ri++] = pfx[i];
+            for (int i = 0; delete_filename[i] && ri < 279; i++) del_req[ri++] = delete_filename[i];
+            del_req[ri] = '\0';
+            send(sockfd, del_req, (size_t)ri, 0);
+
+            char rbuf[512];
+            ssize_t rb;
+            while ((rb = recv(sockfd, rbuf, 511, 0)) > 0) {
+                rbuf[rb] = '\0';
+                char *eof_ptr = strstr(rbuf, "===EOF===");
+                if (eof_ptr) { rb = eof_ptr - rbuf; }
+                if (rb > 0 && write(STDOUT_FILENO, rbuf, rb) < 0)
+                    perror("Eroare scriere");
+                if (eof_ptr) break;
+            }
+            write(STDOUT_FILENO, "\n", 1);
+            continue;
+        }
+
+        // daca nu baga niciun parametru valid
+        if (payload_len == 0) {
+            if (write(STDOUT_FILENO, "Comanda invalida. Folositi --dep x --env y --copy z --list --delete f --upload f --get f\n", 88) < 0) {
+                perror("Eroare scriere");
+            }
+            continue;
+        }
+
+        // Trimitem tot sirul format catre server
+        send(sockfd, payload, payload_len, 0);
 
         // Deschidem fisierul in care vom salva dockerfile ul primit
-        int file_desc = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, FILE_PERMISSIONS);
-        if (file_desc < 0) {
+        int fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
             perror("Eroare la crearea fisierului de output");
             continue;
         }
 
-        char buffer[BUFFER_SIZE];
+        char buffer[1024];
         ssize_t bytes_received;
         int eof_found = 0;
 
         // Serverul nu inchide conexiunea ca sa putem da si urmatoarele comenzi deci ascultam pe retea sa gasim identificatorul eof
-        while (!eof_found && (bytes_received = recv(sockfd, buffer, READ_SIZE, 0)) > 0) {
+        while (!eof_found && (bytes_received = recv(sockfd, buffer, 1023, 0)) > 0) {
             buffer[bytes_received] = '\0';
 
             // cautam eof in buffer cu strstr
@@ -244,22 +389,22 @@ int main(void) {
                 bytes_received = eof_ptr - buffer;//calculam fix cate caractere sunt inainte de eof ca sa nu scriem pe disk
             }
             
+            // Daca avem caractere reale pentru dockerfile le scriem pe disk
             if (bytes_received > 0) {
-                if (write(file_desc, buffer, (size_t)bytes_received) < 0) {
-                    perror("write");
-                    break;
+                if (write(fd, buffer, bytes_received) < 0) {
+                    perror("Eroare la scrierea in fisier");
                 }
             }
         }
         
-        close(file_desc);
+        close(fd); // Inchidem fisierul de pe disk
         
-        if (write(STDOUT_FILENO, "[Client] Dockerfile primit si asamblat cu succes.\n", FINAL_MSG_SIZE) < 0) {
-            perror("write");
+        if (write(STDOUT_FILENO, "[Client] Dockerfile primit si asamblat cu succes.\n", 50) < 0) {
+            perror("Eroare scriere consola finala");
         }
-    }
+    } 
 
-    // Inchidem socketul
+    // Inchidem socketul 
     close(sockfd);
     return 0;
 }

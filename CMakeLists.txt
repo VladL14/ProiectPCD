@@ -6,15 +6,20 @@ project(DockerGenDemo C)
 find_package(libconfig REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Curses REQUIRED)
+find_package(Threads REQUIRED)
 
 # definim executabilul pentru demo
 add_executable(server server.c)
 
 # legam bibliotecile de executabil folosind aliasurile generate
-target_link_libraries(server PUBLIC libconfig::libconfig CURL::libcurl)
+target_link_libraries(server PUBLIC libconfig::libconfig CURL::libcurl Threads::Threads)
 
 add_executable(client client.c)
 
 # definim executabilul pentru clientul de administrare (necesita ncurses)
 add_executable(admin admin.c)
 target_link_libraries(admin PUBLIC ${CURSES_LIBRARIES})
+
+# Client ordinar in limbaj alternativ (Nivel B - componenta 4 obligatorie)
+# Rulare: python3 client_py.py
+# Nu necesita compilare CMake.
