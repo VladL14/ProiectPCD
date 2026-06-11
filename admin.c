@@ -6,7 +6,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>      // exit
-#include <string.h>      // strlen
 #include <unistd.h>      // functii de baza
 #include <fcntl.h>
 #include <sys/socket.h>  // functiile esentiale pentru comunicare pe retea
@@ -35,7 +34,7 @@
 static void send_command_to_server(int sockfd, struct sockaddr_in *server_addr, const char *command, char *response_buffer, int max_len) {
     socklen_t addr_len = sizeof(*server_addr);
     
-    if (sendto(sockfd, command, strlen(command), 0, (struct sockaddr *)server_addr, addr_len) < 0) {
+    if (sendto(sockfd, command, custom_len(command), 0, (struct sockaddr *)server_addr, addr_len) < 0) {
         perror("sendto");
     }
 
@@ -47,7 +46,7 @@ static void send_command_to_server(int sockfd, struct sockaddr_in *server_addr, 
     ssize_t bytes_received = recvfrom(sockfd, response_buffer, (size_t)(max_len - 1), 0, (struct sockaddr *)server_addr, &addr_len);
     
     if (bytes_received < 0) {
-        strncpy(response_buffer, "Eroare: Serverul nu a raspuns sau este offline", (size_t)(max_len - 1));
+        custom_strcpy(response_buffer, "Eroare: Serverul nu a raspuns sau este offline");
         response_buffer[max_len - 1] = '\0';
     } else {
         response_buffer[bytes_received] = '\0';
@@ -58,7 +57,7 @@ int main(void) {
     // prima data ne cream un socket udp
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
-        printf("Eroare la crearea socket-ului UDP\n");
+        write(STDOUT_FILENO, "Eroare la crearea socket-ului UDP\n", custom_len("Eroare la crearea socket-ului UDP\n"));
         return 1;
     }
 
@@ -113,7 +112,7 @@ int main(void) {
     };
 
     char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
-    strncpy(response_buffer, "Bine ai venit in Panoul de Administrare.\nApasa Enter pe o optiune pentru a interoga serverul.", RESPONSE_BUFFER_SIZE - 1);
+    custom_strcpy(response_buffer, "Bine ai venit in Panoul de Administrare.\nApasa Enter pe o optiune pentru a interoga serverul.");
     response_buffer[RESPONSE_BUFFER_SIZE - 1] = '\0';
 
     int running = 1;

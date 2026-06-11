@@ -12,7 +12,10 @@
 #include <string.h>      // strcmp,strtok
 #include <sys/socket.h>  // socket, connect, send, recv
 #include <netinet/in.h>  // pentru familiile de adrese si structurile de porturi (sockaddr_in)
-#include <arpa/inet.h>   // pentru inet_addr, converteste adresa ip in format de retea
+#include <arpa/inet.h>
+
+#define MAX_BUFFER_SIZE 1024
+#define MAX_PATH_SIZE 256
 
 // functie ca sa inlocuim strlen
 size_t custom_len(const char *str) {
@@ -27,7 +30,7 @@ void load_env_file(const char *filename) {
         return; // daca nu exista .env, mergem pe valorile default din cod
     }
 
-    char line[256];
+    char line[MAX_PATH_SIZE];
     while (fgets(line, sizeof(line), fp) != NULL) {
         // ignoram liniile goale sau comentariile
         if (line[0] == '\n' || line[0] == '#' || line[0] == '\r') {
@@ -87,21 +90,21 @@ int main() {
     }
 
     // Afisam un mesaj de succes si verificam daca write ul se trimite(pentru a evita erorile de la build)
-    if (write(STDOUT_FILENO, "[Client] Conectat cu succes la server.\n", 39) < 0) {
+    if (write(STDOUT_FILENO, "[Client] Conectat cu succes la server.\n", custom_len("[Client] Conectat cu succes la server.\n")) < 0) {
         perror("Eroare scriere consola");
     }
     // facem bucla pentru a nu se inchide clientul dupa o singura comanda
     while (1) {
         // Afisam prompt ul custom care sa se afiseze la fiecare pas ca la o tema anterioara
-        if (write(STDOUT_FILENO, "comanda:> ", 11) < 0) {
+        if (write(STDOUT_FILENO, "comanda:> ", custom_len("comanda:> ")) < 0) {
             perror("Eroare afisare prompt");
         }
         
-        char input[1024];
-        for (int i = 0; i < 1024; i++) input[i] = '\0';
+        char input[MAX_BUFFER_SIZE];
+        for (int i = 0; i < MAX_BUFFER_SIZE; i++) input[i] = '\0';
 
         // Citim de la tastatura ce scrie utilizatorul
-        ssize_t n = read(STDIN_FILENO, input, 1023);
+        ssize_t n = read(STDIN_FILENO, input, MAX_BUFFER_SIZE - 1);
         if (n <= 0) break; 
         input[n - 1] = '\0'; // Inlocuim enter ul de la final cu terminatorul
 
@@ -109,27 +112,27 @@ int main() {
         if (strcmp(input, "exit") == 0) break;
         if (input[0] == '\0') continue; // daca da enter in gol nu se intampla nimic
 
-        char payload[1024]; // construim mesajul pe care il trimitem in retea
-        for (int i = 0; i < 1024; i++) payload[i] = '\0';
+        char payload[MAX_BUFFER_SIZE]; // construim mesajul pe care il trimitem in retea
+        for (int i = 0; i < MAX_BUFFER_SIZE; i++) payload[i] = '\0';
         size_t payload_len = 0;
 
-        char output_file[256];
-        for (int i = 0; i < 256; i++) output_file[i] = '\0';
+        char output_file[MAX_PATH_SIZE];
+        for (int i = 0; i < MAX_PATH_SIZE; i++) output_file[i] = '\0';
 
         // Fisierul in care salvam dockerfile ul este by default "Dockerfile.gen"
         char default_out[] = "Dockerfile.gen";
         int idx = 0;
         while (default_out[idx]) { output_file[idx] = default_out[idx]; idx++; }
 
-        char upload_path[256];   // cale locala spre fisierul de incarcat pe server
-        for (int i = 0; i < 256; i++) upload_path[i] = '\0';
+        char upload_path[MAX_PATH_SIZE];   // cale locala spre fisierul de incarcat pe server
+        for (int i = 0; i < MAX_PATH_SIZE; i++) upload_path[i] = '\0';
 
-        char get_filename[256];  // numele fisierului de descarcat de pe server
-        for (int i = 0; i < 256; i++) get_filename[i] = '\0';
+        char get_filename[MAX_PATH_SIZE];  // numele fisierului de descarcat de pe server
+        for (int i = 0; i < MAX_PATH_SIZE; i++) get_filename[i] = '\0';
 
         int  do_list = 0;          // --list: cere lista fisierelor de pe server
-        char delete_filename[256]; // --delete <nume>: sterge un fisier de pe server
-        for (int i = 0; i < 256; i++) delete_filename[i] = '\0';
+        char delete_filename[MAX_PATH_SIZE]; // --delete <nume>: sterge un fisier de pe server
+        for (int i = 0; i < MAX_PATH_SIZE; i++) delete_filename[i] = '\0';
 
         // Folosim strtok pentru a sparge linia citita de la tastatura 
         char *token = strtok(input, " ");
@@ -306,9 +309,9 @@ int main() {
             if (is_err == 1) {
                 // stergem fisierul gol creat
                 unlink(get_filename);
-                if (write(STDOUT_FILENO, "\n", 1) < 0) {}
+                if (write(STDOUT_FILENO, "\n", custom_len("\n")) < 0) perror("eroare newline");
             } else if (eof_dl) {
-                if (write(STDOUT_FILENO, "[Client] Fisier descarcat cu succes.\n", 37) < 0)
+                if (write(STDOUT_FILENO, "[Client] Fisier descarcat cu succes.\n", custom_len("[Client] Fisier descarcat cu succes.\n")) < 0)
                     perror("Eroare scriere consola");
             }
             continue;
