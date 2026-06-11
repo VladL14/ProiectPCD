@@ -660,6 +660,28 @@ static void *admin_udp_thread(void *arg) {
             }
         } else if (strcmp(cmd, "CMD:LOGOUT") == 0) {
             snprintf(resp, sizeof(resp), "OK: Admin deconectat");
+        } else if (strcmp(cmd, "CMD:VERSION") == 0) {
+            snprintf(resp, sizeof(resp), "Versiune Server: DockerGen v1.0\\nStatus: Activ");
+        } else if (strcmp(cmd, "CMD:PING") == 0) {
+            snprintf(resp, sizeof(resp), "PONG! Serverul functioneaza normal.");
+        } else if (strcmp(cmd, "CMD:CLEAN") == 0) {
+            DIR *dir = opendir("uploads");
+            if (dir) {
+                struct dirent *en;
+                int count = 0;
+                while ((en = readdir(dir)) != NULL) {
+                    if (en->d_name[0] != '.') {
+                        char p[300];
+                        snprintf(p, sizeof(p), "uploads/%s", en->d_name);
+                        unlink(p);
+                        count++;
+                    }
+                }
+                closedir(dir);
+                snprintf(resp, sizeof(resp), "OK: %d fisiere sterse din uploads/", count);
+            } else {
+                snprintf(resp, sizeof(resp), "EROARE: Nu pot deschide directorul uploads/");
+            }
         } else {
             snprintf(resp, sizeof(resp), "EROARE: Comanda necunoscuta: %s", cmd);
         }
@@ -704,7 +726,7 @@ static void *inotify_thread_fn(void *arg) {
     if (ifd < 0) { perror("inotify_init"); return NULL; }
 
     int wd = inotify_add_watch(ifd, "uploads",
-                               IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM);
+                               IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM | IN_CLOSE_WRITE);
     if (wd < 0) {
         perror("inotify_add_watch");
         close(ifd);
@@ -723,6 +745,7 @@ static void *inotify_thread_fn(void *arg) {
             struct inotify_event *ev = (struct inotify_event *)ptr;
             if (ev->len > 0) {
                 const char *tip =
+                    (ev->mask & IN_CLOSE_WRITE)? "FINALIZAT_SCRIERE" :
                     (ev->mask & IN_CREATE)     ? "CREAT"    :
                     (ev->mask & IN_MODIFY)     ? "MODIF"    :
                     (ev->mask & IN_DELETE)     ? "STERS"    :

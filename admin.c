@@ -20,7 +20,7 @@
 #define RESPONSE_BUFFER_SIZE 2048
 #define SIN_ZERO_SIZE 8
 #define TIMEOUT_SECONDS 2
-#define MAX_CHOICES 4
+#define MAX_CHOICES 7
 #define ENTER_KEY 10
 #define MAX_LINE_WIDTH 78
 #define TITLE_ROW 1
@@ -106,7 +106,10 @@ int main(void) {
         "1. Raport Status Server",
         "2. Afisare Clienti Conectati",
         "3. Deconectare Client",
-        "4. Iesire din Panoul de Administrare"
+        "4. Iesire din Panoul de Administrare",
+        "5. Versiune Server",
+        "6. Curata fisiere uploads/",
+        "7. Ping Server"
     };
 
     char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
@@ -186,6 +189,15 @@ int main(void) {
                     // ii zicem serverului ca iesim ca sa poata accepta alt admin in locul nostru
                     send_command_to_server(sockfd, &server_addr, "CMD:LOGOUT", response_buffer, (int)sizeof(response_buffer));
                     running = 0;
+                }
+                else if (choice == 4) {
+                    send_command_to_server(sockfd, &server_addr, "CMD:VERSION", response_buffer, (int)sizeof(response_buffer));
+                }
+                else if (choice == 5) {
+                    send_command_to_server(sockfd, &server_addr, "CMD:CLEAN", response_buffer, (int)sizeof(response_buffer));
+                }
+                else if (choice == 6) {
+                    send_command_to_server(sockfd, &server_addr, "CMD:PING", response_buffer, (int)sizeof(response_buffer));
                 }
                 break;
             default:
