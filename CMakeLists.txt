@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(DockerGenDemo C)
+project(DockerGenDemo C CXX)
+
+# ajutam CMake sa gaseasca fisierele generate de Conan
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}/generators")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}/generators")
 
 # cautam pachetele furnizate de conan
 find_package(libconfig REQUIRED)

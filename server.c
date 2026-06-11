@@ -67,7 +67,7 @@ static void server_log(LogLevel level, const char *fmt, ...) {
     if (n <= 0 || n >= (int)sizeof(line)) n = sizeof(line) - 1;
 
     pthread_mutex_lock(&g_log_mutex);
-    write(STDOUT_FILENO, line, (size_t)n);
+    if (write(STDOUT_FILENO, line, (size_t)n) < 0) {}
     if (g_log_file) {
         fwrite(line, 1, (size_t)n, g_log_file);
         fflush(g_log_file);
@@ -763,326 +763,7 @@ static void *inotify_thread_fn(void *arg) {
     return NULL;
 }
 
-// ============================================================
-// Web/REST API  (FCE Web/API — Component 5, optional)
-// Port: WEB_API_PORT
-//   GET  /status   -> JSON cu starea serverului
-//   GET  /files    -> JSON cu lista fisierelor din uploads/
-//   POST /generate -> genereaza Dockerfile din JSON body
-// ============================================================
 
-#define WEB_API_PORT 8082
-
-// Parses a JSON array of strings under key, e.g. {"deps":["curl","git"]}
-static int parse_json_array(const char *json, const char *key,
-                             char out[][64], int max) {
-    char pattern[128];
-    int pn = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (pn <= 0) return 0;
-    const char *pos = strstr(json, pattern);
-    if (!pos) return 0;
-    pos += pn;
-    while (*pos == ' ' || *pos == ':' || *pos == '\t') pos++;
-    if (*pos != '[') return 0;
-    pos++;
-
-    int count = 0;
-    while (count < max && *pos != '\0') {
-        while (*pos == ' ' || *pos == ',' || *pos == '\n' || *pos == '\r') pos++;
-        if (*pos == ']' || *pos == '\0') break;
-        if (*pos != '"') { pos++; continue; }
-        pos++;
-        int j = 0;
-        while (*pos && *pos != '"' && j < 63) out[count][j++] = *pos++;
-        out[count][j] = '\0';
-        if (*pos == '"') pos++;
-        count++;
-    }
-    return count;
-}
-
-// Builds Dockerfile content into out buffer (no socket I/O).
-// Reuses check_via_repology / check_via_homebrew from above.
-static int generate_dockerfile_to_buf(
-    char deps[][64], int dep_count,
-    char envs[][64], int env_count,
-    char copies[][64], int copy_count,
-    char *out, int out_sz)
-{
-    config_t cfg;
-    config_init(&cfg);
-    const char *base_image = "ubuntu:22.04";
-    const char *maintainer = "admin";
-    const char *workdir    = "/app";
-    if (config_read_file(&cfg, "demo.cfg")) {
-        config_lookup_string(&cfg, "container.base_image", &base_image);
-        config_lookup_string(&cfg, "container.maintainer", &maintainer);
-        config_lookup_string(&cfg, "container.workdir",    &workdir);
-    }
-
-    int pos = 0;
-    pos += snprintf(out + pos, (size_t)(out_sz - pos),
-        "FROM %s\nLABEL maintainer=\"%s\"\nWORKDIR %s\n\n",
-        base_image, maintainer, workdir);
-
-    for (int i = 0; i < env_count && pos < out_sz - 1; i++)
-        pos += snprintf(out + pos, (size_t)(out_sz - pos), "ENV %s\n", envs[i]);
-    if (env_count > 0 && pos < out_sz - 1)
-        pos += snprintf(out + pos, (size_t)(out_sz - pos), "\n");
-
-    for (int i = 0; i < copy_count && pos < out_sz - 1; i++)
-        pos += snprintf(out + pos, (size_t)(out_sz - pos), "COPY %s\n", copies[i]);
-    if (copy_count > 0 && pos < out_sz - 1)
-        pos += snprintf(out + pos, (size_t)(out_sz - pos), "\n");
-
-    if (dep_count > 0) {
-        pos += snprintf(out + pos, (size_t)(out_sz - pos),
-            "RUN apt-get update && apt-get install -y \\\n");
-        for (int i = 0; i < dep_count && pos < out_sz - 1; i++) {
-            char version[64] = {0};
-            server_log(LOG_INFO, "[WebAPI/generate] Caut: %s", deps[i]);
-            if (check_via_repology(deps[i], version, sizeof(version))) {
-                pos += snprintf(out + pos, (size_t)(out_sz - pos),
-                    "    %s \\  # v%s (repology)\n", deps[i], version);
-            } else if (check_via_homebrew(deps[i], version, sizeof(version))) {
-                pos += snprintf(out + pos, (size_t)(out_sz - pos),
-                    "    %s \\  # v%s (homebrew)\n", deps[i], version);
-            } else {
-                pos += snprintf(out + pos, (size_t)(out_sz - pos),
-                    "    # ESUAT: %s\n", deps[i]);
-            }
-            sleep(1);
-        }
-        pos += snprintf(out + pos, (size_t)(out_sz - pos),
-            "    && apt-get clean && rm -rf /var/lib/apt/lists/*\n\n");
-    }
-
-    if (pos < out_sz - 1)
-        pos += snprintf(out + pos, (size_t)(out_sz - pos), "CMD [\"/bin/bash\"]\n");
-
-    config_destroy(&cfg);
-    return pos;
-}
-
-// Trimite un raspuns HTTP complet (headere + body)
-static void http_send(int fd, int code, const char *ctype,
-                      const char *body, int body_len) {
-    const char *reason = (code == 200) ? "OK" :
-                         (code == 404) ? "Not Found" : "Bad Request";
-    char hdr[512];
-    int n = snprintf(hdr, sizeof(hdr),
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %d\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        code, reason, ctype, body_len);
-    send(fd, hdr, (size_t)n, 0);
-    if (body_len > 0) send(fd, body, (size_t)body_len, 0);
-}
-
-// Parseaza o cerere HTTP: metoda, cale, body
-// Returneaza 0 la esec
-static int parse_http_request(int fd, char method[16], char path[256],
-                               char *body, int body_sz, int *body_out_len) {
-    char raw[16384] = {0};
-    int  raw_len    = 0;
-
-    while (raw_len < (int)sizeof(raw) - 1) {
-        ssize_t r = recv(fd, raw + raw_len,
-                         (size_t)(sizeof(raw) - 1 - raw_len), 0);
-        if (r <= 0) break;
-        raw_len += (int)r;
-        raw[raw_len] = '\0';
-        if (strstr(raw, "\r\n\r\n")) break;
-    }
-    if (raw_len == 0) return 0;
-
-    // Prima linie: "METHOD /path HTTP/1.x"
-    char *p = raw;
-    int mi = 0;
-    while (*p && *p != ' ' && mi < 15) method[mi++] = *p++;
-    method[mi] = '\0';
-    while (*p == ' ') p++;
-    int pi = 0;
-    while (*p && *p != ' ' && pi < 255) path[pi++] = *p++;
-    path[pi] = '\0';
-
-    // Content-Length
-    int content_length = 0;
-    const char *cl = strstr(raw, "Content-Length:");
-    if (!cl) cl = strstr(raw, "content-length:");
-    if (cl) {
-        cl += 15;
-        while (*cl == ' ') cl++;
-        while (*cl >= '0' && *cl <= '9') {
-            content_length = content_length * 10 + (*cl - '0');
-            cl++;
-        }
-    }
-
-    // Body
-    *body_out_len = 0;
-    const char *hdr_end = strstr(raw, "\r\n\r\n");
-    if (hdr_end && content_length > 0) {
-        hdr_end += 4;
-        int already = raw_len - (int)(hdr_end - raw);
-        int copy    = already < body_sz - 1 ? already : body_sz - 1;
-        for (int i = 0; i < copy; i++) body[i] = hdr_end[i];
-        *body_out_len = copy;
-
-        int remaining = content_length - already;
-        while (remaining > 0 && *body_out_len < body_sz - 1) {
-            int want = remaining < body_sz - 1 - *body_out_len
-                     ? remaining : body_sz - 1 - *body_out_len;
-            ssize_t r = recv(fd, body + *body_out_len, (size_t)want, 0);
-            if (r <= 0) break;
-            *body_out_len += (int)r;
-            remaining    -= (int)r;
-        }
-        body[*body_out_len] = '\0';
-    }
-    return 1;
-}
-
-// GET /status
-static void web_handle_status(int fd) {
-    time_t now    = time(NULL);
-    long   uptime = (long)(now - g_start_time);
-
-    pthread_mutex_lock(&g_clients_mutex);
-    int cnt = g_client_count;
-    pthread_mutex_unlock(&g_clients_mutex);
-
-    char json[512];
-    int n = snprintf(json, sizeof(json),
-        "{\"status\":\"ONLINE\",\"tcp_port\":%d,\"admin_port\":%d,"
-        "\"web_port\":%d,\"clients\":%d,\"uptime\":%ld}",
-        g_tcp_port, ADMIN_PORT, WEB_API_PORT, cnt, uptime);
-
-    http_send(fd, 200, "application/json", json, n);
-}
-
-// GET /files  — lista fisierelor din uploads/
-static void web_handle_files(int fd) {
-    DIR  *dir = opendir("uploads");
-    char  json[4096];
-    int   pos = snprintf(json, sizeof(json), "{\"files\":[");
-
-    if (dir) {
-        struct dirent *entry;
-        int first = 1;
-        while ((entry = readdir(dir)) != NULL && pos < (int)sizeof(json) - 8) {
-            if (entry->d_name[0] == '.') continue;
-            if (!first) pos += snprintf(json + pos, sizeof(json) - (size_t)pos, ",");
-            pos += snprintf(json + pos, sizeof(json) - (size_t)pos,
-                            "\"%s\"", entry->d_name);
-            first = 0;
-        }
-        closedir(dir);
-    }
-    pos += snprintf(json + pos, sizeof(json) - (size_t)pos, "]}");
-    http_send(fd, 200, "application/json", json, pos);
-}
-
-// POST /generate  — genereaza Dockerfile din JSON body
-static void web_handle_generate(int fd, const char *body) {
-    char deps[10][64];   int dep_count  = 0;
-    char envs[10][64];   int env_count  = 0;
-    char copies[10][64]; int copy_count = 0;
-
-    dep_count  = parse_json_array(body, "deps",   deps,   10);
-    env_count  = parse_json_array(body, "envs",   envs,   10);
-    copy_count = parse_json_array(body, "copies", copies, 10);
-
-    server_log(LOG_INFO, "[WebAPI] /generate: %d dep, %d env, %d copy",
-               dep_count, env_count, copy_count);
-
-    char dockerfile[16384];
-    int  len = generate_dockerfile_to_buf(
-        deps, dep_count, envs, env_count, copies, copy_count,
-        dockerfile, (int)sizeof(dockerfile));
-
-    http_send(fd, 200, "text/plain", dockerfile, len);
-}
-
-// Thread per conexiune HTTP (spawn-uit din web_api_thread)
-static void *web_conn_thread(void *arg) {
-    int fd = *(int *)arg;
-    free(arg);
-
-    char method[16]  = {0};
-    char path[256]   = {0};
-    char body[16384] = {0};
-    int  body_len    = 0;
-
-    if (!parse_http_request(fd, method, path, body, (int)sizeof(body), &body_len)) {
-        close(fd);
-        return NULL;
-    }
-
-    server_log(LOG_INFO, "[WebAPI] %s %s (%d bytes body)", method, path, body_len);
-
-    if (strcmp(method, "GET") == 0 && strcmp(path, "/status") == 0) {
-        web_handle_status(fd);
-    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/files") == 0) {
-        web_handle_files(fd);
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/generate") == 0) {
-        web_handle_generate(fd, body);
-    } else {
-        const char *err = "{\"error\":\"Not Found\"}";
-        http_send(fd, 404, "application/json", err, (int)strlen(err));
-    }
-
-    close(fd);
-    return NULL;
-}
-
-// Thread principal Web/REST API — asculta conexiuni HTTP pe WEB_API_PORT
-static void *web_api_thread(void *arg) {
-    (void)arg;
-
-    int web_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (web_fd < 0) { perror("web socket"); return NULL; }
-
-    int opt = 1;
-    setsockopt(web_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(WEB_API_PORT);
-
-    if (bind(web_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("web bind");
-        close(web_fd);
-        return NULL;
-    }
-    listen(web_fd, 10);
-    server_log(LOG_INFO, "[WebAPI] HTTP server pornit pe port %d", WEB_API_PORT);
-
-    while (1) {
-        struct sockaddr_in caddr;
-        socklen_t clen = sizeof(caddr);
-        int cfd = accept(web_fd, (struct sockaddr *)&caddr, &clen);
-        if (cfd < 0) continue;
-
-        int *fdp = malloc(sizeof(int));
-        if (!fdp) { close(cfd); continue; }
-        *fdp = cfd;
-
-        pthread_t tid;
-        if (pthread_create(&tid, NULL, web_conn_thread, fdp) != 0) {
-            close(cfd); free(fdp);
-        } else {
-            pthread_detach(tid);
-        }
-    }
-
-    close(web_fd);
-    return NULL;
-}
 
 void load_env_file(const char *filename) {
     FILE *fp = fopen(filename, "r");
@@ -1138,8 +819,8 @@ static void *stdin_thread_fn(void *arg) {
             pthread_mutex_lock(&g_clients_mutex);
             int cnt = g_client_count;
             pthread_mutex_unlock(&g_clients_mutex);
-            server_log(LOG_INFO, "[Stdin] Status: ONLINE | TCP:%d | Admin(UDP):%d | REST:%d | Clienti:%d | Uptime:%lds",
-                       g_tcp_port, ADMIN_PORT, WEB_API_PORT, cnt, uptime);
+            server_log(LOG_INFO, "[Stdin] Status: ONLINE | TCP:%d | Admin(UDP):%d | Clienti:%d | Uptime:%lds",
+                       g_tcp_port, ADMIN_PORT, cnt, uptime);
 
         } else if (strcmp(line, "clients") == 0) {
             pthread_mutex_lock(&g_clients_mutex);
@@ -1208,13 +889,12 @@ int main() {
     server_log(LOG_INFO, "  Dockerfile Generator Server");
     server_log(LOG_INFO, "  TCP clients  : port %d", port);
     server_log(LOG_INFO, "  Admin UDP    : port %d", ADMIN_PORT);
-    server_log(LOG_INFO, "  REST HTTP    : port %d", WEB_API_PORT);
-    server_log(LOG_INFO, "  Log file     : %s",      LOG_FILE);
+        server_log(LOG_INFO, "  Log file     : %s",      LOG_FILE);
     server_log(LOG_INFO, "  Nivel B: poll | pipe anonim | inotify | pthread");
     server_log(LOG_INFO, "================================================");
 
     // pornim threadurile de servicii (Nivel B: exclusiv pthread pentru sincronizare)
-    pthread_t admin_tid, proc_tid, inotify_tid, web_tid, stdin_tid;
+    pthread_t admin_tid, proc_tid, inotify_tid, stdin_tid;
 
     if (pthread_create(&admin_tid, NULL, admin_udp_thread, NULL) != 0)
         perror("pthread_create admin");
@@ -1231,10 +911,6 @@ int main() {
     else
         pthread_detach(inotify_tid);
 
-    if (pthread_create(&web_tid, NULL, web_api_thread, NULL) != 0)
-        perror("pthread_create web");
-    else
-        pthread_detach(web_tid);
 
     if (pthread_create(&stdin_tid, NULL, stdin_thread_fn, NULL) != 0)
         perror("pthread_create stdin");

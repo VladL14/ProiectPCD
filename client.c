@@ -295,17 +295,18 @@ int main() {
                 char *eof_ptr = strstr(buffer_dl, "===EOF===");
                 if (eof_ptr) { eof_dl = 1; bytes_dl = eof_ptr - buffer_dl; }
                 if (bytes_dl > 0) {
-                    if (is_err == 1)
-                        write(STDOUT_FILENO, buffer_dl, bytes_dl);
-                    else
-                        write(fd, buffer_dl, bytes_dl);
+                    if (is_err == 1) {
+                        if (write(STDOUT_FILENO, buffer_dl, bytes_dl) < 0) {}
+                    } else {
+                        if (write(fd, buffer_dl, bytes_dl) < 0) {}
+                    }
                 }
             }
             close(fd);
             if (is_err == 1) {
                 // stergem fisierul gol creat
                 unlink(get_filename);
-                write(STDOUT_FILENO, "\n", 1);
+                if (write(STDOUT_FILENO, "\n", 1) < 0) {}
             } else if (eof_dl) {
                 if (write(STDOUT_FILENO, "[Client] Fisier descarcat cu succes.\n", 37) < 0)
                     perror("Eroare scriere consola");
@@ -352,7 +353,7 @@ int main() {
                     perror("Eroare scriere");
                 if (eof_ptr) break;
             }
-            write(STDOUT_FILENO, "\n", 1);
+            if (write(STDOUT_FILENO, "\n", 1) < 0) {}
             continue;
         }
 
