@@ -12,7 +12,19 @@
 #include <netinet/in.h>  // structurile de adrese ipv4
 #include <arpa/inet.h>   // inet addr
 #include <sys/time.h>    // timeval pt timeout
-#include <ncurses.h>     // includem ncurses pentru a desena in terminal
+#include <ncurses.h>
+
+static size_t custom_len(const char *str) {
+    size_t i = 0;
+    while (str[i] != '\0') i++;
+    return i;
+}
+
+static void custom_strcpy(char* dest, const char* src) {
+    int i = 0; while (src[i] != '\0') { dest[i] = src[i]; i++; }
+    dest[i] = '\0';
+}
+     // includem ncurses pentru a desena in terminal
 
 #define ADMIN_PORT 8081
 #define SERVER_IP "127.0.0.1"
