@@ -4,35 +4,31 @@
 /**
  * P8
  * Proiect PCD - Dockerfile Generator (Server)
- * Server TCP care primeste comenzi de la clienti (dependinte, variabile de mediu, fisiere)
- * si asambleaza un Dockerfile.
- *
- * Nivel B:
- *   - poll() pentru I/O multiplexing (FCE Clienti Ordinari)
- *   - pipe anonim pentru coada FIFO intre I/O thread si processing thread
- *   - pthread exclusiv pentru sincronizare (mutex)
- *   - inotify pentru monitorizarea directorului uploads/
+ * aici avem implementarea serverului. ideea de baza este ca serverul sa primeasca comenzi
+ * de la mai multi clienti tcp simultan si sa asambleze un dockerfile pentru ei.
+ * de asemenea comunica printr un socket udp cu panoul de admin pentru interogari.
+ * inotify monitorizeaza folderul de uploads, iar pentru cozi si date comune folosim pipe uri si mutex uri.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/inotify.h>
-#include <dirent.h>
-#include <poll.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <time.h>
-#include <curl/curl.h>
-#include <libconfig.h>
-#include <stdarg.h>
-#include <signal.h>
-#include <errno.h>
+#include <stdio.h>       // perror si operatii de baza cu fisiere
+#include <stdlib.h>      // alocare de memorie si functii de baza standard
+#include <string.h>      // strcmp, strtok, procesare de texte
+#include <unistd.h>      // read, write, close, sleep
+#include <fcntl.h>       // deschidere de fisiere cu O_WRONLY
+#include <sys/stat.h>    // mkdir si citit info despre fisiere
+#include <sys/inotify.h> // inotify ca sa pazim folderul de uploads sa vedem ce misca
+#include <dirent.h>      // parcurgere foldere
+#include <poll.h>        // multiplexare i/o ca sa ascultam toti clientii tcp deodata
+#include <pthread.h>     // thread uri si mutex uri ca sa nu ne batem pe aceleasi date
+#include <sys/socket.h>  // socket, bind, listen, accept
+#include <netinet/in.h>  // familii de adrese pentru porturi ipv4
+#include <arpa/inet.h>   // convertim adrese ip pentru retea
+#include <time.h>        // ne uitam la ceas ca sa calculam uptime ul
+#include <curl/curl.h>   // facem cereri web catre repology si homebrew
+#include <libconfig.h>   // citim valorile initiale din cfg ul nostru
+#include <stdarg.h>      // argumente variabile pentru functia custom de printat log uri
+#include <signal.h>      // prindem semnale gen ctrl c ca sa inchidem totul curat
+#include <errno.h>       // sa aflam exact codul erorii
 
 #define CURL_BUFFER_SIZE 8192
 #define ADMIN_PORT       8081
@@ -40,7 +36,7 @@
 #define WORK_DATA_SIZE   1024
 #define LOG_FILE         "server.log"
 
-// --- Sistem de logging thread-safe (stdout + fisier cu timestamp) ---
+// sistemul de log uri thread safe ca sa nu se incalice textul pe ecran cand scriu mai multe thread uri deodata
 
 typedef enum { LOG_INFO, LOG_WARN, LOG_ERROR } LogLevel;
 
@@ -75,7 +71,7 @@ static void server_log(LogLevel level, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mutex);
 }
 
-// pipe anonim: I/O thread scrie WorkItem, processing thread citeste (Nivel B: pipe anonim)
+// pipe ul anonim: thread ul principal arunca chestii in el, iar thread ul de procesare le scoate si face treaba
 static int g_work_pipe[2] = {-1, -1};
 
 // WorkItem transportat prin pipe: dimensiunea < PIPE_BUF (4096) => scriere atomica
@@ -619,7 +615,9 @@ static void *admin_udp_thread(void *arg) {
         cmd[nb] = '\0';
         resp[0] = '\0';
 
-        server_log(LOG_INFO, "[Admin] Comanda primita: %s", cmd);
+        char *cmd_log = cmd;
+        if (strncmp(cmd, "CMD:", 4) == 0) cmd_log += 4;
+        server_log(LOG_INFO, "[Admin] Comanda primita: %s", cmd_log);
 
         if (strcmp(cmd, "CMD:STATUS") == 0) {
             time_t now    = time(NULL);
@@ -887,10 +885,9 @@ int main() {
 
     server_log(LOG_INFO, "================================================");
     server_log(LOG_INFO, "  Dockerfile Generator Server");
-    server_log(LOG_INFO, "  TCP clients  : port %d", port);
-    server_log(LOG_INFO, "  Admin UDP    : port %d", ADMIN_PORT);
+    server_log(LOG_INFO, "  Port TCP     : %d", port);
+    server_log(LOG_INFO, "  Port UDP(Adm): %d", ADMIN_PORT);
         server_log(LOG_INFO, "  Log file     : %s",      LOG_FILE);
-    server_log(LOG_INFO, "  Nivel B: poll | pipe anonim | inotify | pthread");
     server_log(LOG_INFO, "================================================");
 
     // pornim threadurile de servicii (Nivel B: exclusiv pthread pentru sincronizare)

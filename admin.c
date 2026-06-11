@@ -105,8 +105,8 @@ int main(void) {
     const char *options[MAX_CHOICES] = {
         "1. Raport Status Server",
         "2. Afisare Clienti Conectati",
-        "3. Deconectare Client",
-        "4. Iesire din Panoul de Administrare",
+        "3. Elimina un client TCP (Kick)",
+        "4. Deconectare Admin (Iesire panou)",
         "5. Versiune Server",
         "6. Curata fisiere uploads/",
         "7. Ping Server"
