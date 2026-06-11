@@ -57,7 +57,7 @@ int main(void) {
     // prima data ne cream un socket udp
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
-        write(STDOUT_FILENO, "Eroare la crearea socket-ului UDP\n", custom_len("Eroare la crearea socket-ului UDP\n"));
+        if (write(STDOUT_FILENO, "Eroare la crearea socket-ului UDP\n", custom_len("Eroare la crearea socket-ului UDP\n")) < 0) {}
         return 1;
     }
 
