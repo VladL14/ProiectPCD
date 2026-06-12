@@ -1,0 +1,559 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[romanian]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{titlesec}
+
+\geometry{
+    a4paper,
+    left=2.5cm,
+    right=2.5cm,
+    top=3cm,
+    bottom=3cm
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small Software Requirements Specification for DockerfileGen}
+\rfoot{\thepage}
+\lfoot{\small Universitatea de Vest Timi\c{s}oara}
+
+\begin{document}
+
+% -------------------------------------------------------
+%  Pagina de titlu
+% -------------------------------------------------------
+\begin{titlepage}
+    \centering
+    \vspace*{1cm}
+    {\scshape\LARGE Software Requirements Specification\par}
+    \vspace{0.5cm}
+    {\large for\par}
+    \vspace{0.5cm}
+    {\Huge\bfseries DockerfileGen\par}
+    \vspace{1.5cm}
+    {\Large Version 1.2\par}
+    \vspace{1cm}
+    {\bfseries Realizat de:\par}
+    Apostol Andrei, Stan Alexandru, Lunculescu Gheorghe,\\
+    Bolea Alexandra, C\^{i}rlugea Alexandru\par
+    \vspace{1cm}
+    {\bfseries Universitatea de Vest Timi\c{s}oara\par}
+    \vspace{0.5cm}
+    {\large 12.06.2026\par}
+\end{titlepage}
+
+% -------------------------------------------------------
+%  Cuprins
+% -------------------------------------------------------
+\tableofcontents
+\newpage
+
+% -------------------------------------------------------
+%  1. Introducere
+% -------------------------------------------------------
+\section{Introducere}
+
+\subsection{Scopul documentului}
+
+Acest document specific\u{a} cerin\c{t}ele software pentru proiectul DockerGen. Produsul este un sistem
+distribuit de tip Multi-Client Server, compus dintr-o component\u{a} de execu\c{t}ie, un server de procesare
+\c{s}i un modul de administrare, menit s\u{a} automatizeze validarea fi\c{s}ierelor \texttt{Dockerfile} \c{s}i s\u{a} permit\u{a}
+monitorizarea \^{i}n timp real a infrastructurii.
+
+\subsection{Conventii ale documentului}
+
+Documentul respect\u{a} formatul standard IEEE pentru specifica\c{t}ii. S-a folosit font monospa\c{t}iat pentru
+a denumi elemente de interfa\c{t}\u{a} grafic\u{a} tip consol\u{a} sau nume de fi\c{s}iere.
+
+\subsection{Publicul tinta}
+
+Acest document se adreseaz\u{a} profesorului coordonator (pentru evaluarea cerin\c{t}elor). Se recomand\u{a}
+parcurgerea sec\c{t}iunii 2 pentru o vedere de ansamblu asupra fluxului, urmat\u{a} de sec\c{t}iunile 3 \c{s}i 4 pentru
+specifica\c{t}ii detaliate.
+
+\subsection{Tematica aleasa si aria de aplicabilitate a proiectului}
+
+Tematica aleas\u{a} este automatizarea infrastructurii \c{s}i validarea online a dependen\c{t}elor software prin
+comunicare de re\c{t}ea. Produsul rezolv\u{a} problema gener\u{a}rii manuale de fi\c{s}iere Docker, unde dezvoltatorii
+risc\u{a} s\u{a} introduc\u{a} versiuni de pachete incompatibile sau inexistente. Sistemul ofer\u{a} o interfa\c{t}\u{a}
+interactiv\u{a} prin care utilizatorul cere anumite componente, iar aplica\c{t}ia preia responsabilitatea de a
+verifica online, \^{i}n timp real, compatibilitatea acestora cu sistemul de operare de baz\u{a}, generând \^{i}n
+final un document \texttt{Dockerfile} asamblat dup\u{a} cele mai bune practici.
+
+% -------------------------------------------------------
+%  2. Descriere generala
+% -------------------------------------------------------
+\section{Descriere general\u{a}}
+
+\subsection{Perspectiva proiectului}
+
+DockerGen este un produs software original \c{s}i de sine st\u{a}t\u{a}tor (self-contained), dezvoltat ca proiect
+academic \^{i}n cadrul disciplinei Programare Concurent\u{a} \c{s}i Distribuit\u{a}. Originea proiectului const\u{a} \^{i}n
+necesitatea aplic\u{a}rii practice a conceptelor de procesare paralel\u{a} (prin utilizarea firelor de execu\c{t}ie POSIX)
+\c{s}i a comunic\u{a}rii distribuite (prin protocolul TCP/IP) pentru a rezolva o problem\u{a} real\u{a} de productivitate
+\^{i}n ingineria software.
+
+De\c{s}i este o aplica\c{t}ie independent\u{a}, func\c{t}ionalitatea sa este str\^{a}ns legat\u{a} de ecosistemul Docker,
+servind drept utilitar de pre-procesare \c{s}i validare \^{i}nainte de construc\c{t}ia efectiv\u{a} a unei imagini.
+Produsul nu face parte dintr-o familie de produse existent\u{a} \c{s}i nu \^{i}nlocuie\c{s}te un sistem software anterior
+al unei organiza\c{t}ii, fiind o solu\c{t}ie experimental\u{a} menit\u{a} s\u{a} demonstreze modul \^{i}n care mecanismele
+de concuren\c{t}\u{a} (fire de execu\c{t}ie, mutex-uri, pipe-uri anonime) pot optimiza laten\c{t}a re\c{t}elei \^{i}n
+interac\c{t}iunea cu interfe\c{t}e externe (API-uri web de tip Repology sau Homebrew).
+
+\subsection{Func\c{t}ionalit\u{a}\c{t}ile proiectului}
+
+Produsul DockerGen este proiectat s\u{a} execute \textbf{\c{s}ase func\c{t}ii majore} interconectate: preluarea comenzilor,
+validarea datelor, asamblarea documentului final, transferul bidirecţional de fi\c{s}iere, monitorizarea \^{i}n
+timp real a serverului \c{s}i administrarea exclusiv\u{a} prin sesiune dedicat\u{a}.
+
+Prin intermediul modulului de administrare, sistemul permite supravegherea st\u{a}rii serverului \c{s}i
+vizualizarea clien\c{t}ilor activi. \^{I}n prim\u{a} faz\u{a}, aplica\c{t}ia preia interactiv instruc\c{t}iunile utilizatorului
+privind dependen\c{t}ele software necesare, configura\c{t}iile variabilelor de mediu \c{s}i fi\c{s}ierele locale ce trebuie
+transferate \^{i}n container. Ulterior, componenta de procesare valideaz\u{a} \^{i}n timp real existen\c{t}a \c{s}i versiunile
+pachetelor cerute prin interogarea automat\u{a} a unor depozite software externe recunoscute.
+
+Sistemul beneficiaz\u{a} de un mecanism de rezerv\u{a} (fallback) care acceseaz\u{a} o surs\u{a} secundar\u{a} de date
+\^{i}n cazul \^{i}n care prima interogare nu g\u{a}se\c{s}te pachetul respectiv. \^{I}n etapa final\u{a}, aplica\c{t}ia asambleaz\u{a}
+dinamic fi\c{s}ierul Dockerfile, combin\^{a}nd rezultatele valid\u{a}rilor cu o imagine de baz\u{a} prestabilit\u{a} \c{s}i
+marc\^{a}nd explicit, sub form\u{a} de comentarii de avertizare, pachetele care nu au putut fi identificate.
+
+Pe l\^{a}ng\u{a} generarea Dockerfile-ului, sistemul suport\u{a} opera\c{t}ii de gestiune a fi\c{s}ierelor: \^{i}nc\u{a}rcare,
+desc\u{a}rcare, listare \c{s}i \c{s}tergere prin acela\c{s}i canal TCP. Un modul \texttt{inotify} monitorizeaz\u{a} \^{i}n timp real
+directorul de stocare al serverului, iar un thread dedicat accept\u{a} comenzi interactive direct din
+consola serverului.
+
+\begin{figure}[h]
+    \centering
+    % Inlocuiti cu calea corecta a imaginii: \includegraphics[width=0.8\textwidth]{diagrama_context.png}
+    \fbox{\parbox{0.8\textwidth}{\centering\vspace{2cm}[Diagrama de context]\vspace{2cm}}}
+    \caption{Diagrama de context}
+    \label{fig:context}
+\end{figure}
+
+\subsection{Categorii de utilizatori si caracteristici}
+
+Aplica\c{t}ia este destinat\u{a} cu prec\u{a}dere dezvoltatorilor software \c{s}i inginerilor DevOps care posed\u{a} un
+nivel avansat de expertiz\u{a} tehnic\u{a} \c{s}i sunt familiariza\c{t}i cu fluxurile de lucru bazate pe linia de comand\u{a}
+(CLI). Ace\c{s}ti utilizatori interac\c{t}ioneaz\u{a} cu sistemul \^{i}n mod frecvent, \^{i}n special \^{i}n etapele incipiente
+de configurare a infrastructurii unui proiect, av\^{a}nd ca obiectiv principal eficientizarea \c{s}i securizarea
+procesului de asamblare a imaginilor de container.
+
+Aplica\c{t}ia deserve\c{s}te dou\u{a} roluri principale:
+\begin{itemize}
+    \item \textbf{Dezvoltatorul} --- utilizeaz\u{a} CLI-ul strict pentru generarea fi\c{s}ierelor \c{s}i transferul de
+    fi\c{s}iere c\u{a}tre/de pe server.
+    \item \textbf{Administratorul} --- supravegheaz\u{a} sistemul prin panoul TUI, gestioneaz\u{a} clien\c{t}ii
+    conecta\c{t}i \c{s}i interogheaz\u{a} starea serverului.
+\end{itemize}
+
+De\c{s}i componenta de client r\u{a}m\^{a}ne strict bazat\u{a} pe consol\u{a}, modulul de administrare introduce o
+interfa\c{t}\u{a} vizual\u{a} bazat\u{a} pe text (TUI) pentru a facilita navigarea rapid\u{a} prin meniuri \c{s}i rapoarte de
+status, f\u{a}r\u{a} a necesita cuno\c{s}tin\c{t}e de sintax\u{a} a comenzilor.
+
+\subsection{Mediul de operare}
+
+Mediul de operare necesar pentru func\c{t}ionarea optim\u{a} a sistemului este reprezentat de platformele
+compatibile POSIX, incluz\^{a}nd diverse distribu\c{t}ii de Linux sau sisteme Unix-like, cerin\c{t}\u{a} valabil\u{a}
+at\^{a}t pentru componenta client, c\^{a}t \c{s}i pentru cea de server. O condi\c{t}ie esen\c{t}ial\u{a} pentru \^{i}ndeplinirea
+sarcinilor de validare asumat\u{a} de produs este existen\c{t}a unei conexiuni active la internet, necesar\u{a}
+pentru interogarea \^{i}n timp real a bazelor de date externe prin protocolul HTTPS.
+
+Sistemul depinde de capacitatea mediului gazd\u{a} de a sus\c{t}ine comunica\c{t}ii interne prin socket-uri TCP
+\c{s}i UDP pe adresa de loopback. Pe l\^{a}ng\u{a} protocolul TCP (port 8080 pentru clien\c{t}i), mediul gazd\u{a} trebuie
+s\u{a} permit\u{a} traficul UDP pe portul 8081 pentru a facilita comunicarea non-blocant\u{a} \^{i}ntre panoul de
+administrare \c{s}i server.
+
+\subsection{Constr\^{a}ngeri de design \c{s}i implementare}
+
+Procesul de proiectare \c{s}i implementare este guvernat de o serie de constr\^{a}ngeri tehnice stricte,
+\^{i}ncep\^{a}nd cu utilizarea exclusiv\u{a} a limbajului de programare C \c{s}i a mecanismelor de concuren\c{t}\u{a} native
+sistemului de operare. O cerin\c{t}\u{a} fundamental\u{a} impus\u{a} este gestionarea concurent\u{a} a interog\u{a}rilor de
+re\c{t}ea prin utilizarea firelor de execu\c{t}ie POSIX (\texttt{pthread}), prev\^{a}z\^{a}nd blocarea thread-ului principal
+de I/O al serverului. Aceast\u{a} arhitectur\u{a} este corelat\u{a} cu necesitatea asambl\u{a}rii secven\c{t}iale a fi\c{s}ierului
+final pentru a garanta integritatea \c{s}i ordinea logic\u{a} a instruc\c{t}iunilor.
+
+Sincronizarea dintre thread-ul I/O \c{s}i cel de procesare se realizeaz\u{a} printr-o coad\u{a} FIFO implementat\u{a}
+cu un pipe anonim, garantând scrieri atomice (\texttt{sizeof(WorkItem)} $<$ \texttt{PIPE\_BUF}). De asemenea,
+sistemul impune limite temporale riguroase pentru interac\c{t}iunile externe \c{s}i exclude utilizarea valorilor
+fixe \^{i}n codul surs\u{a}, opt\^{a}nd pentru o structur\u{a} flexibil\u{a} bazat\u{a} pe fi\c{s}iere de configurare externe
+(\texttt{demo.cfg}, \texttt{.env}) ce pot fi modificate f\u{a}r\u{a} recompilarea proiectului.
+
+% -------------------------------------------------------
+%  3. Functionalitati
+% -------------------------------------------------------
+\section{Func\c{t}ionalit\u{a}\c{t}ile sistemului}
+
+\subsection{Validarea online a dependen\c{t}elor software}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} func\c{t}ionalitate reprezint\u{a} nucleul aplica\c{t}iei \c{s}i are o prioritate \textbf{înalt\u{a}}. Permite sistemului s\u{a}
+verifice existen\c{t}a \c{s}i versiunea pachetelor de sistem (ex.\ utilitare de Linux) solicitate de utilizator,
+\^{i}nainte de a le include \^{i}n infrastructur\u{a}. Valoarea ad\u{a}ugat\u{a} const\u{a} \^{i}n reducerea erorilor de construire
+a containerelor prin utilizarea unei arhitecturi cu surs\u{a} de rezerv\u{a} (fallback) pentru interogarea bazelor
+de date.
+
+\subsubsection{Secven\c{t}e de interac\c{t}iune}
+
+\begin{enumerate}
+    \item \textbf{Stimul:} Utilizatorul introduce o cerere pentru instalarea unuia sau mai multor pachete
+    software.
+    \item \textbf{R\u{a}spuns (Surs\u{a} Primar\u{a}):} Serverul lanseaz\u{a} un thread dedicat per pachet care
+    interogheaz\u{a} automat prima surs\u{a} extern\u{a} de validare. Dac\u{a} pachetul este g\u{a}sit, extrage versiunea
+    stabil\u{a}.
+    \item \textbf{R\u{a}spuns (Surs\u{a} Secundar\u{a}):} Dac\u{a} pachetul nu este recunoscut de sursa primar\u{a},
+    acela\c{s}i thread ini\c{t}iaz\u{a} automat interogarea sursei de rezerv\u{a}.
+    \item \textbf{R\u{a}spuns (Final):} Sistemul centralizeaz\u{a} rezultatele, distingând \^{i}ntre pachetele valide
+    (cu versiune ata\c{s}at\u{a}) \c{s}i cele invalide (inexistente \^{i}n ambele surse).
+\end{enumerate}
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-1:} Sistemul trebuie s\u{a} extrag\u{a} \c{s}i s\u{a} asocieze automat versiunea curent\u{a} a unui
+    pachet software validat pe baza datelor furnizate de un serviciu web extern.
+    \item \textbf{REQ-2:} Sistemul trebuie s\u{a} implementeze un mecanism de tip ``fallback'' automat,
+    interog\^{a}nd o a doua surs\u{a} de date exclusiv \^{i}n cazul \^{i}n care prima interogare nu returneaz\u{a} un
+    rezultat pozitiv.
+    \item \textbf{REQ-3:} Sistemul trebuie s\u{a} func\c{t}ioneze \^{i}ntr-un mod tolerant la erori (graceful
+    degradation); e\c{s}ecul g\u{a}sirii unui pachet nu trebuie s\u{a} \^{i}ntrerup\u{a} sau s\u{a} anuleze validarea
+    celorlalte pachete din aceea\c{s}i cerere.
+    \item \textbf{REQ-4:} Orice interogare extern\u{a} trebuie s\u{a} fie guvernat\u{a} de o limit\u{a} de timp
+    prestabilit\u{a} (timeout de maximum 8 secunde, configurat\u{a} prin \texttt{CURLOPT\_TIMEOUT}), pentru a preveni
+    blocarea thread-ului de validare \^{i}n cazul indisponibilit\u{a}\c{t}ii serviciilor ter\c{t}e.
+\end{itemize}
+
+% ---
+\subsection{Configurarea parametrilor de mediu \c{s}i a resurselor}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} caracteristic\u{a} are o prioritate \textbf{medie-înalt\u{a}} \c{s}i este responsabil\u{a} cu preluarea set\u{a}rilor
+statice \c{s}i dinamice necesare personaliz\u{a}rii containerului. Include gestionarea variabilelor de mediu
+introduse de utilizator, maparea fi\c{s}ierelor locale care trebuie transferate \^{i}n container \c{s}i citirea
+configura\c{t}iilor de baz\u{a} ale serverului.
+
+\subsubsection{Secven\c{t}e de interac\c{t}iune}
+
+\begin{enumerate}
+    \item \textbf{Stimul (set\u{a}ri statice):} Modulul server este pornit de un administrator.
+    \item \textbf{R\u{a}spuns:} Sistemul cite\c{s}te fi\c{s}ierul local de configurare \texttt{demo.cfg} \c{s}i \^{i}ncarc\u{a} set\u{a}rile
+    implicite (imaginea de baz\u{a} a sistemului de operare, directorul de lucru, autorul). De asemenea,
+    cite\c{s}te fi\c{s}ierul \texttt{.env} pentru configurarea portului de ascultare.
+    \item \textbf{Stimul (set\u{a}ri dinamice):} Utilizatorul introduce argumente de tip variabil\u{a}
+    (cheie=valoare) sau de tip transfer fi\c{s}ier (surs\u{a}, destina\c{t}ie).
+    \item \textbf{R\u{a}spuns:} Sistemul valideaz\u{a} formatul argumentelor \c{s}i le stocheaz\u{a} temporar \^{i}n memorie
+    pentru a fi plasate \^{i}n sec\c{t}iunile corespunz\u{a}toare ale documentului final.
+\end{enumerate}
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-5:} Sistemul trebuie s\u{a} permit\u{a} citirea set\u{a}rilor de infrastructur\u{a} de baz\u{a}
+    dintr-un fi\c{s}ier extern de configurare (\texttt{demo.cfg}), elimin\^{a}nd necesitatea modific\u{a}rii codului
+    surs\u{a}.
+    \item \textbf{REQ-6:} Sistemul trebuie s\u{a} accepte \c{s}i s\u{a} prelucreze perechi de tip ``cheie=valoare''
+    pentru a defini variabile de mediu la nivelul containerului.
+    \item \textbf{REQ-7:} Sistemul trebuie s\u{a} permit\u{a} specificarea resurselor ce urmeaz\u{a} a fi copiate
+    din mediul gazd\u{a} \^{i}n interiorul containerului, asigur\^{a}nd maparea corect\u{a} \^{i}ntre calea surs\u{a} \c{s}i
+    calea destina\c{t}ie.
+    \item \textbf{REQ-8:} Sistemul trebuie s\u{a} ignore automat argumentele goale sau invalide furnizate
+    de utilizator, returnând un mesaj clar de \^{i}ndrumare privind sintaxa corect\u{a}.
+\end{itemize}
+
+% ---
+\subsection{Asamblarea, formatarea \c{s}i salvarea documentului}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} caracteristic\u{a} are o prioritate \textbf{înalt\u{a}}, reprezent\^{a}nd stadiul final al proces\u{a}rii. Sistemul
+trebuie s\u{a} combine toate datele prelucrate anterior \^{i}ntr-un format text valid (standardul Dockerfile),
+s\u{a} trateze vizual erorile de validare \c{s}i s\u{a} asigure transferul complet c\u{a}tre discul utilizatorului.
+
+\subsubsection{Secven\c{t}e de interac\c{t}iune}
+
+\begin{enumerate}
+    \item \textbf{Stimul:} Finalizarea procesului de validare a tuturor pachetelor \c{s}i prelucrarea
+    parametrilor din memoria sistemului.
+    \item \textbf{R\u{a}spuns (asamblare):} Sistemul genereaz\u{a} textul secven\c{t}ial, respect\^{a}nd ordinea
+    logic\u{a} a instruc\c{t}iunilor (\texttt{FROM} $\rightarrow$ \texttt{LABEL} $\rightarrow$ \texttt{WORKDIR}
+    $\rightarrow$ \texttt{ENV} $\rightarrow$ \texttt{COPY} $\rightarrow$ \texttt{RUN} $\rightarrow$ \texttt{CMD}).
+    \item \textbf{R\u{a}spuns (transfer):} Sistemul transmite documentul c\u{a}tre componenta de salvare a
+    utilizatorului.
+    \item \textbf{R\u{a}spuns (salvare):} La primirea markerului de finalizare \texttt{===EOF===}, sistemul
+    \^{i}nchide fi\c{s}ierul local \c{s}i revine la prompt pentru o nou\u{a} comand\u{a}.
+\end{enumerate}
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-9:} Sistemul trebuie s\u{a} structureze documentul final conform standardelor de
+    infrastructur\u{a} (instruc\c{t}iuni \texttt{FROM}, \texttt{ENV}, \texttt{COPY}, \texttt{RUN}), aplic\^{a}nd automat
+    bunele practici (precum comenzi de cur\u{a}\c{t}are a memoriei cache dup\u{a} instalarea pachetelor:\
+    \texttt{apt-get clean \&\& rm -rf /var/lib/apt/lists/*}).
+    \item \textbf{REQ-10:} Pachetele care au e\c{s}uat \^{i}n procesul de validare online trebuie s\u{a} fie scrise
+    \^{i}n documentul final sub form\u{a} de comentarii de avertizare (ex.\ marcate ca \texttt{\# ESUAT:
+    [pachet]}), nefiind incluse \^{i}n comanda activ\u{a} de instalare a containerului.
+    \item \textbf{REQ-11:} Comunicarea dintre module trebuie s\u{a} includ\u{a} un indicator specific de
+    finalizare a transmisiei (\texttt{===EOF===}), garantând c\u{a} fi\c{s}ierul este salvat pe disc abia dup\u{a} ce
+    toate datele au fost recep\c{t}ionate.
+    \item \textbf{REQ-12:} Sistemul trebuie s\u{a} permit\u{a} utilizatorului s\u{a} suprascrie numele implicit
+    al fi\c{s}ierului de ie\c{s}ire generat prin argumentul \texttt{--out}.
+\end{itemize}
+
+% ---
+\subsection{Monitorizare \c{s}i Administrare}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} func\c{t}ionalitate are o prioritate \textbf{medie} \c{s}i permite unui utilizator cu rol de administrator
+s\u{a} interogheze serverul pentru a ob\c{t}ine rapoarte privind starea acestuia \c{s}i pentru a vizualiza \c{s}i gestiona
+clien\c{t}ii conecta\c{t}i. Accesul la panoul de administrare este \textbf{exclusiv}: un singur administrator poate
+de\c{t}ine sesiunea activ\u{a} la un moment dat, aceasta expir\^{a}nd automat dup\u{a} 60 de secunde de inactivitate.
+
+\subsubsection{Secven\c{t}e de interac\c{t}iune}
+
+\begin{enumerate}
+    \item \textbf{Stimul (conectare):} Administratorul lanseaz\u{a} panoul de administrare. Dac\u{a} nicio
+    sesiune nu este activ\u{a} (sau a expirat), serverul accept\u{a} automat noua conexiune \c{s}i \^{i}nregistreaz\u{a}
+    adresa \c{s}i portul UDP al administratorului curent.
+    \item \textbf{Respingere:} Dac\u{a} o sesiune activ\u{a} exist\u{a} \c{s}i un alt administrator \^{i}ncearc\u{a} s\u{a}
+    se conecteze, serverul returneaz\u{a} un mesaj de eroare \c{s}i ignor\u{a} cererea.
+    \item \textbf{Stimul (interogare):} Administratorul navigheaz\u{a} \^{i}n meniul interfe\c{t}ei \c{s}i selecteaz\u{a}
+    interogarea dorit\u{a}.
+    \item \textbf{R\u{a}spuns:} Cererea UDP este trimis\u{a} c\u{a}tre server, care confirm\u{a} c\u{a} expeditorul
+    coincide cu sesiunea activ\u{a}, proceseaz\u{a} comanda \c{s}i returneaz\u{a} raportul text.
+    \item \textbf{Deconectare:} Administratorul selecteaz\u{a} ``Deconectare Admin''; serverul prime\c{s}te
+    \texttt{CMD:LOGOUT} \c{s}i elibereaz\u{a} sesiunea, permi\c{t}\^{a}nd unui nou administrator s\u{a} se conecteze.
+\end{enumerate}
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-13:} Sistemul trebuie s\u{a} ofere o consol\u{a} de administrare separat\u{a} de fluxul
+    principal de date, bazat\u{a} pe o interfa\c{t}\u{a} vizual\u{a} TUI (ncurses).
+    \item \textbf{REQ-14:} Interog\u{a}rile de administrare trebuie s\u{a} func\c{t}ioneze pe baza unui timeout
+    definit (maxim 2 secunde, prin \texttt{SO\_RCVTIMEO}) pentru a nu \^{i}nghe\c{t}a interfata \^{i}n cazul \^{i}n care
+    serverul este offline.
+    \item \textbf{REQ-15:} Serverul trebuie s\u{a} poat\u{a} accepta comenzi de la administrator \^{i}n paralel
+    cu procesarea asambl\u{a}rilor Dockerfile pentru clien\c{t}ii standard.
+    \item \textbf{REQ-16:} Sistemul trebuie s\u{a} implementeze un mecanism de sesiune exclusiv\u{a} 1:1
+    pentru administratori: un singur panou de administrare poate de\c{t}ine sesiunea activ\u{a} simultan, cu un
+    timeout de inactivitate de 60 de secunde.
+    \item \textbf{REQ-17:} Administratorul trebuie s\u{a} poat\u{a} elibera explicit sesiunea prin comanda
+    \texttt{CMD:LOGOUT}, permi\c{t}\^{a}nd unui alt administrator s\u{a} preia controlul f\u{a}r\u{a} a a\c{s}tepta expirarea
+    timeout-ului.
+    \item \textbf{REQ-18:} Serverul trebuie s\u{a} suporte cel pu\c{t}in urm\u{a}toarele comenzi de administrare:
+    \texttt{CMD:STATUS}, \texttt{CMD:CLIENTS}, \texttt{CMD:KICK}, \texttt{CMD:LOGOUT}, \texttt{CMD:VERSION},
+    \texttt{CMD:PING}, \texttt{CMD:CLEAN}.
+\end{itemize}
+
+% ---
+\subsection{Gestiunea fi\c{s}ierelor pe server}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} func\c{t}ionalitate are o prioritate \textbf{medie} \c{s}i permite clien\c{t}ilor TCP s\u{a} \^{i}ncarce, s\u{a}
+desc\u{a}rce, s\u{a} listeze \c{s}i s\u{a} \c{s}tearg\u{a} fi\c{s}iere stocate \^{i}n directorul \texttt{uploads/} al serverului.
+Serverul monitorizeaz\u{a} acest director \^{i}n timp real prin mecanismul \texttt{inotify}.
+
+\subsubsection{Secven\c{t}e de interac\c{t}iune}
+
+\begin{enumerate}
+    \item \textbf{Stimul (upload):} Clientul trimite un header \texttt{UPLOAD:basename:size} urmat imediat
+    de con\c{t}inutul binar al fi\c{s}ierului.
+    \item \textbf{R\u{a}spuns:} Serverul valideaz\u{a} numele fi\c{s}ierului (respinge \texttt{..} \c{s}i \texttt{/}), creeaz\u{a}
+    fi\c{s}ierul \^{i}n \texttt{uploads/} prin scriere \^{i}n flux \c{s}i confirm\u{a} cu \texttt{OK:UPLOAD:basename===EOF===}.
+    \item \textbf{Stimul (download):} Clientul trimite \texttt{DOWNLOAD:basename}.
+    \item \textbf{R\u{a}spuns:} Serverul deschide fi\c{s}ierul, streameaz\u{a} con\c{t}inutul \c{s}i marcheaz\u{a} finalul
+    cu \texttt{===EOF===}.
+    \item \textbf{Stimul (listare):} Clientul trimite \texttt{LIST}.
+    \item \textbf{R\u{a}spuns:} Serverul returneaz\u{a} lista fi\c{s}ierelor din \texttt{uploads/}, c\^{a}te unul pe linie,
+    terminând cu \texttt{===EOF===}.
+    \item \textbf{Stimul (\c{s}tergere):} Clientul trimite \texttt{DELETE:basename}.
+    \item \textbf{R\u{a}spuns:} Serverul \c{s}terge fi\c{s}ierul \c{s}i confirm\u{a} cu \texttt{OK:DELETE:basename===EOF===}.
+\end{enumerate}
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-19:} Sistemul trebuie s\u{a} permit\u{a} transferul bidirecţional de fi\c{s}iere arbitrare
+    \^{i}ntre client \c{s}i server prin acela\c{s}i canal TCP utilizat pentru generarea Dockerfile-ului.
+    \item \textbf{REQ-20:} Serverul trebuie s\u{a} valideze toate numele de fi\c{s}iere primite de la clien\c{t}i,
+    respingând orice secven\c{t}\u{a} care con\c{t}ine \texttt{..} sau \texttt{/} pentru a preveni atacuri de tip path
+    traversal.
+    \item \textbf{REQ-21:} Serverul trebuie s\u{a} monitorizeze directorul \texttt{uploads/} prin \texttt{inotify}
+    \c{s}i s\u{a} \^{i}nregistreze \^{i}n log orice eveniment de creare, modificare, \c{s}tergere sau mutare a fi\c{s}ierelor.
+    \item \textbf{REQ-22:} La primirea unui fi\c{s}ier prin upload, serverul trebuie s\u{a} gestioneze
+    streamingul \^{i}n buc\u{a}\c{t}i (chunked), f\u{a}r\u{a} a stoca \^{i}ntregul fi\c{s}ier \^{i}n memorie.
+\end{itemize}
+
+% ---
+\subsection{Jurnalizare \c{s}i consol\u{a} interactiv\u{a}}
+
+\subsubsection{Descriere \c{s}i prioritate}
+
+Aceast\u{a} func\c{t}ionalitate are o prioritate \textbf{medie} \c{s}i asigur\u{a} trasabilitatea opera\c{t}iunilor serverului
+\c{s}i posibilitatea controlului direct din terminalul operatorului.
+
+\subsubsection{Cerin\c{t}e func\c{t}ionale}
+
+\begin{itemize}
+    \item \textbf{REQ-23:} Serverul trebuie s\u{a} men\c{t}in\u{a} un sistem de jurnalizare thread-safe cu trei
+    niveluri de severitate (\texttt{LOG\_INFO}, \texttt{LOG\_WARN}, \texttt{LOG\_ERROR}), scriind simultan pe
+    \texttt{stdout} \c{s}i \^{i}n fi\c{s}ierul \texttt{server.log}.
+    \item \textbf{REQ-24:} Serverul trebuie s\u{a} accepte comenzi interactive de la operatorul local prin
+    \texttt{stdin}: \texttt{help}, \texttt{status}, \texttt{clients}, \texttt{shutdown}.
+    \item \textbf{REQ-25:} Portul TCP de ascultare trebuie s\u{a} poat\u{a} fi configurat prin variabila de
+    mediu \texttt{SERVER\_PORT} din fi\c{s}ierul \texttt{.env}, f\u{a}r\u{a} recompilare.
+\end{itemize}
+
+% -------------------------------------------------------
+%  4. Cerinte interfete externe
+% -------------------------------------------------------
+\section{Cerin\c{t}e pentru interfe\c{t}e externe}
+
+\subsection{Interfe\c{t}e utilizator}
+
+Aplica\c{t}ia expune o interfa\c{t}\u{a} bazat\u{a} pe linie de comand\u{a} (CLI). Utilizatorul este \^{i}nt\^{a}mpinat de un
+prompt interactiv (\texttt{comanda:>}) care accept\u{a} argumentele descrise \^{i}n tabelul de mai jos.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Argument} & \textbf{Descriere} \\
+\midrule
+\texttt{--dep <pachet>}    & Adaug\u{a} o dependen\c{t}\u{a} de validat \c{s}i instalat \\
+\texttt{--env <KEY=VAL>}   & Adaug\u{a} o variabil\u{a} de mediu \^{i}n container \\
+\texttt{--copy <src dst>}  & Specific\u{a} un fi\c{s}ier de copiat \^{i}n container \\
+\texttt{--out <fisier>}    & Suprascriere nume implicit al fi\c{s}ierului generat \\
+\texttt{--upload <cale>}   & \^{I}ncarc\u{a} un fi\c{s}ier local pe server \\
+\texttt{--get <nume>}      & Desc\u{a}rc\u{a} un fi\c{s}ier de pe server \\
+\texttt{--list}            & Afiseaz\u{a} fi\c{s}ierele din \texttt{uploads/} al serverului \\
+\texttt{--delete <nume>}   & \c{S}terge un fi\c{s}ier de pe server \\
+\texttt{exit}              & \^{I}nchide clientul \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Pe l\^{a}ng\u{a} CLI-ul clientului, sistemul expune o interfa\c{t}\u{a} semi-grafic\u{a} (TUI) pentru modulul de
+administrare, oferind meniuri navigabile din s\u{a}ge\c{t}ile tastaturii \c{s}i delimit\u{a}ri clare pe ecran pentru
+afi\c{s}area r\u{a}spunsurilor.
+
+\subsection{Interfe\c{t}e software}
+
+DockerGen interac\c{t}ioneaz\u{a} cu urm\u{a}toarele componente software, biblioteci \c{s}i servicii externe:
+
+\begin{itemize}
+    \item \textbf{A. Sistemul de Operare:} Produsul depinde de apelurile de sistem POSIX (ex.\
+    \texttt{pthread\_create()}, \texttt{poll()}, \texttt{pipe()}, \texttt{inotify\_init()}, gestionarea
+    descriptorilor de fi\c{s}iere). Prin urmare, sistemul trebuie rulat \^{i}ntr-un mediu compatibil
+    (distribu\c{t}ii Linux, macOS, Unix).
+
+    \item \textbf{B. Biblioteci externe:}
+    \begin{itemize}
+        \item \texttt{libcurl}: utilizat\u{a} exclusiv de componenta server pentru a gestiona cererile
+        HTTP/HTTPS c\u{a}tre bazele de date online.
+        \item \texttt{libconfig}: utilizat\u{a} de componenta server pentru preluarea set\u{a}rilor de
+        asamblare (ex.\ \texttt{base\_image}, \texttt{workdir}) din fi\c{s}ierul de configurare \texttt{demo.cfg}.
+        \item \texttt{ncurses}: utilizat\u{a} exclusiv de componenta de administrare pentru interceptarea
+        tastelor (f\u{a}r\u{a} ecou pe ecran) \c{s}i desenarea matricial\u{a} a meniului interactiv.
+        \item \texttt{pthread}: utilizat\u{a} pentru toate mecanismele de concuren\c{t}\u{a} (fire de execu\c{t}ie,
+        mutex-uri).
+    \end{itemize}
+
+    \item \textbf{C. API-uri Web:} Sistemul interac\c{t}ioneaz\u{a} cu dou\u{a} servicii externe, primind date
+    sub form\u{a} de mesaje structurate JSON pe care le parseaz\u{a} intern:
+    \begin{itemize}
+        \item \textbf{Repology API (v1):} Interfa\c{t}a primar\u{a}. Serverul trimite un request GET c\u{a}tre
+        \texttt{https://repology.org/api/v1/project/<pachet>} pentru a ob\c{t}ine versiunea stabil\u{a}
+        (câmpul \texttt{version}).
+        \item \textbf{Homebrew API:} Interfa\c{t}a secundar\u{a} (fallback). Serverul trimite un request GET
+        c\u{a}tre \texttt{https://formulae.brew.sh/api/formula/<pachet>.json} pentru a ob\c{t}ine versiunea
+        stabil\u{a} \^{i}n cazul \^{i}n care interogarea primar\u{a} e\c{s}ueaz\u{a}.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Interfe\c{t}e de comunicare}
+
+Cerin\c{t}ele de comunicatie ale sistemului sunt \^{i}mp\u{a}r\c{t}ite \^{i}n dou\u{a} fluxuri distincte:
+
+\subsubsection*{A. Comunicarea intern\u{a} (Client/Admin c\u{a}tre Server)}
+
+Fluxul de date dintre interfa\c{t}a utilizatorului \c{s}i modulul de procesare se realizeaz\u{a} prin TCP pe
+portul 8080 (implicit). Clientul serializ\u{a} argumentele utilizatorului \^{i}ntr-un payload de tip raw bytes
+folosind prefixele din tabelul urm\u{a}tor:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Prefix} & \textbf{Tip} & \textbf{Descriere} \\
+\midrule
+\texttt{D:}                   & dependen\c{t}\u{a}          & Pachet de instalat \\
+\texttt{E:}                   & variabil\u{a} de mediu     & Pereche cheie=valoare \\
+\texttt{C:}                   & fi\c{s}ier de copiat        & Cale surs\u{a} + destina\c{t}ie \\
+\texttt{UPLOAD:basename:size} & upload                     & Header urmat de date binare \\
+\texttt{DOWNLOAD:basename}    & download                   & Cerere fi\c{s}ier de pe server \\
+\texttt{LIST}                 & listare                    & Cerere list\u{a} fi\c{s}iere \\
+\texttt{DELETE:basename}      & \c{s}tergere                & Cerere \c{s}tergere fi\c{s}ier \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Finalul oric\u{a}rui r\u{a}spuns de la server este marcat cu \c{s}ablonul unic \texttt{===EOF===}, detectat de client
+pentru a \c{s}ti c\^{a}nd s\u{a} \^{i}nchid\u{a} fi\c{s}ierul local sau s\u{a} revin\u{a} la prompt.
+
+Comenzile de administrare se transmit prin UDP pe portul 8081 (\texttt{CMD:STATUS}, \texttt{CMD:CLIENTS},
+\texttt{CMD:KICK}, \texttt{CMD:LOGOUT}, \texttt{CMD:VERSION}, \texttt{CMD:PING}, \texttt{CMD:CLEAN}).
+
+\subsubsection*{B. Comunicarea extern\u{a} (Server c\u{a}tre web API)}
+
+Pentru a \^{i}ndeplini sarcinile de validare online, modulul server interac\c{t}ioneaz\u{a} cu servicii web ter\c{t}e
+prin HTTPS peste portul 443, asigur\^{a}nd criptarea \c{s}i integritatea datelor la interogarea Repology
+sau Homebrew.
+
+% -------------------------------------------------------
+%  5. Cerinte non-functionale
+% -------------------------------------------------------
+\section{Alte cerin\c{t}e non-func\c{t}ionale}
+
+\subsection{Cerin\c{t}e de performan\c{t}\u{a}}
+
+Interog\u{a}rile c\u{a}tre bazele de date externe trebuie s\u{a} beneficieze de un sistem limitator de timp (timeout
+de maximum 8 secunde). Sistemul nu trebuie s\u{a} se blocheze a\c{s}tept\^{a}nd un r\u{a}spuns de la un API
+indisponibil. Bucla de acceptare a conexiunilor TCP utilizeaz\u{a} \texttt{poll()} cu timeout de 500ms pentru
+a r\u{a}mâne receptiv\u{a} la semnalele de oprire. \^{I}ntre interog\u{a}rile Repology consecutive se introduce o
+pauz\u{a} de 1 secund\u{a} pentru evitarea rate-limiting-ului (HTTP 429).
+
+\subsection{Cerin\c{t}e de Securitate}
+
+Sistemul trebuie s\u{a} previn\u{a} dep\u{a}\c{s}irile de memorie (buffer overflow). Aceasta presupune trunchierea
+inteligent\u{a} a r\u{a}spunsurilor venite de pe internet \^{i}n cazul \^{i}n care un API returneaz\u{a} volume de date
+ce dep\u{a}\c{s}esc limita de memorie alocat\u{a} aplica\c{t}iei (\texttt{CURL\_BUFFER\_SIZE = 8192} bytes). Toate
+numele de fi\c{s}iere primite prin comenzile de upload, download \c{s}i \c{s}tergere trebuie validate pentru a
+preveni atacuri de tip path traversal (verificarea secven\c{t}elor \texttt{..} \c{s}i \texttt{/}).
+
+\subsection{Atribute de calitate a software-ului}
+
+Comportamentul de baz\u{a} al sistemului (precum imaginea de sistem de operare folosit\u{a} ca \c{s}ablon)
+trebuie s\u{a} poat\u{a} fi modificat oric\^{a}nd de c\u{a}tre un administrator exclusiv prin alterarea fi\c{s}ierului
+\texttt{demo.cfg} sau \texttt{.env}, f\u{a}r\u{a} a necesita rescrierea sau recompilarea codului surs\u{a}. Sistemul de
+jurnalizare thread-safe garanteaz\u{a} trasabilitatea tuturor opera\c{t}iunilor, at\^{a}t pe \texttt{stdout} c\^{a}t \c{s}i
+\^{i}n fi\c{s}ierul \texttt{server.log}.
+
+\end{document}

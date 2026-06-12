@@ -1,0 +1,527 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[romanian]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{titlesec}
+
+\geometry{
+    a4paper,
+    left=2.5cm,
+    right=2.5cm,
+    top=3cm,
+    bottom=3cm
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small Software Design Document for DockerfileGen}
+\rfoot{\thepage}
+\lfoot{\small Universitatea de Vest Timi\c{s}oara}
+
+\begin{document}
+
+% -------------------------------------------------------
+%  Pagina de titlu
+% -------------------------------------------------------
+\begin{titlepage}
+    \centering
+    \vspace*{1cm}
+    {\scshape\LARGE Software Design Document\par}
+    \vspace{0.5cm}
+    {\large for\par}
+    \vspace{0.5cm}
+    {\Huge\bfseries DockerfileGen\par}
+    \vspace{1.5cm}
+    {\Large Version 1.2\par}
+    \vspace{1cm}
+    {\bfseries Realizat de:\par}
+    Apostol Andrei, Stan Alexandru, Lunculescu Gheorghe,\\
+    Bolea Alexandra, C\^{i}rlugea Alexandru\par
+    \vspace{1cm}
+    {\bfseries Universitatea de Vest Timi\c{s}oara\par}
+    \vspace{0.5cm}
+    {\large 12.06.2026\par}
+\end{titlepage}
+
+% -------------------------------------------------------
+%  Cuprins
+% -------------------------------------------------------
+\tableofcontents
+\newpage
+
+% -------------------------------------------------------
+%  1. Introducere
+% -------------------------------------------------------
+\section{Introducere}
+
+\subsection{Scopul documentului}
+
+Acest document define\c{s}te arhitectura tehnic\u{a}, modulele de cod, structura de comunicare \c{s}i
+implementarea sistemului DockerGen. Ac\c{t}ioneaz\u{a} ca un manual tehnic pentru dezvoltatorii care
+doresc s\u{a} \^{i}n\c{t}eleag\u{a}, s\u{a} men\c{t}in\u{a} sau s\u{a} extind\u{a} aplica\c{t}ia.
+
+\subsection{Aria de acoperire}
+
+Documentul acoper\u{a} implementarea tehnic\u{a} a celor trei componente (client, server \c{s}i admin),
+modul de interogare a API-urilor externe (Repology / Homebrew) \c{s}i detalieaz\u{a} protocolul de
+re\c{t}ea personalizat utilizat pentru transmiterea instruc\c{t}iunilor, gestiunea fi\c{s}ierelor \c{s}i
+controlul erorilor.
+
+\subsection{Referin\c{t}e}
+
+Documentul Software Requirements Specification (SRS) --- versiunea 1.2.
+
+% -------------------------------------------------------
+%  2. Prezentare generala
+% -------------------------------------------------------
+\section{Prezentare general\u{a} a sistemului}
+
+\subsection{Descrierea sistemului}
+
+DockerGen este o solu\c{t}ie distribuit\u{a} care automatizeaz\u{a} crearea de fi\c{s}iere Dockerfile.
+Sistemul este compus din trei entit\u{a}\c{t}i: un client de execu\c{t}ie pentru generarea fi\c{s}ierelor,
+un server central de procesare \c{s}i un panou de administrare dedicat monitoriz\u{a}rii \^{i}n timp real
+a st\u{a}rii serviciului \c{s}i a clien\c{t}ilor conecta\c{t}i. Serverul interogheaz\u{a} surse externe
+de \^{i}ncredere pentru a valida pachetele solicitate \c{s}i asambleaz\u{a} un fi\c{s}ier final optimizat.
+
+\subsection{Obiective de design}
+
+Izolarea sarcinilor de re\c{t}ea prin fire de execu\c{t}ie POSIX (\texttt{pthread}), asigurarea
+integrit\u{a}\c{t}ii datelor prin protocolul TCP \c{s}i modularizarea logicii de parsare.
+Comunica\c{t}ia inter-thread se realizeaz\u{a} printr-o coad\u{a} FIFO implementat\u{a} cu un pipe
+anonim, garantând scrieri atomice.
+
+\subsection{Arhitectura}
+
+Sistemul utilizeaz\u{a} o arhitectur\u{a} distribuit\u{a} Multi-Client Server. Aceasta include un flux
+de date TCP pentru generarea Dockerfile-urilor \c{s}i un flux de control UDP pentru func\c{t}iile de
+administrare.
+
+% -------------------------------------------------------
+%  3. Design arhitectura
+% -------------------------------------------------------
+\section{Design arhitectur\u{a}}
+
+\subsection*{Component breakdown}
+
+Arhitectura proiectului este definit\u{a} de trei componente critice:
+
+\begin{itemize}
+    \item \textbf{A. Componenta Client (\texttt{client.c}):} Gestioneaz\u{a} interfata CLI, proceseaz\u{a}
+    argumentele utilizatorului (\texttt{--dep}, \texttt{--env}, \texttt{--copy}, \texttt{--upload},
+    \texttt{--get}, \texttt{--list}, \texttt{--delete}) \c{s}i scrie fluxul de date recep\c{t}ionat pe disc.
+
+    \item \textbf{B. Componenta Server (\texttt{server.c}):} Entitatea central\u{a} care utilizeaz\u{a}
+    \texttt{poll()} pentru multiplexarea conexiunilor TCP \c{s}i fire de execu\c{t}ie POSIX
+    (\texttt{pthread}) pentru paralelizarea sarcinilor: un thread de procesare a cererilor (alimentat
+    printr-un pipe anonim), un thread UDP de administrare, un thread \texttt{inotify} \c{s}i un thread
+    de consol\u{a} interactiv\u{a} (\texttt{stdin}).
+
+    \item \textbf{C. Componenta Admin (\texttt{admin.c}):} Un panou vizual (TUI) bazat pe
+    \texttt{ncurses} care permite administratorului s\u{a} interogheze serverul prin UDP pentru a
+    ob\c{t}ine statistici \c{s}i a gestiona clien\c{t}ii, f\u{a}r\u{a} a ocupa un slot de conexiune TCP.
+\end{itemize}
+
+\subsection*{Tehnologii utilizate}
+
+\begin{itemize}
+    \item \textbf{Limbaj \c{s}i Build:} Limbajul C, gestiune pachete: Conan, build system: CMake.
+    \item \textbf{Biblioteci externe:}
+    \begin{itemize}
+        \item \texttt{ncurses}: pentru interfata vizual\u{a} (TUI) a panoului de administrare.
+        \item \texttt{libcurl}: pentru comunicatia HTTP/JSON cu API-urile web.
+        \item \texttt{libconfig}: pentru parsarea fi\c{s}ierelor de configurare \texttt{.cfg}.
+        \item \texttt{pthread}: pentru toate mecanismele de concuren\c{t}\u{a} (fire de execu\c{t}ie,
+        mutex-uri).
+    \end{itemize}
+    \item \textbf{Protocoale \c{s}i Mecanisme:}
+    \begin{itemize}
+        \item \textbf{TCP (portul 8080):} pentru transferul fi\c{s}ierelor \^{i}ntre client \c{s}i server.
+        \item \textbf{UDP (portul 8081):} pentru schimbul rapid de comenzi de control \^{i}ntre admin
+        \c{s}i server.
+        \item \textbf{Multiplexare \texttt{poll()}:} pentru gestionarea eficient\u{a} a descriptorilor
+        de socket \c{s}i suport multi-client \^{i}n server (timeout 500~ms).
+        \item \textbf{Pipe anonim:} coad\u{a} FIFO \^{i}ntre thread-ul principal de I/O \c{s}i
+        thread-ul de procesare; elementul transportat este \texttt{WorkItem}
+        (\texttt{sizeof(WorkItem) < PIPE\_BUF}), garantând atomicitate.
+        \item \textbf{\texttt{inotify}:} monitorizare \^{i}n timp real a directorului
+        \texttt{uploads/} (evenimente \texttt{IN\_CREATE}, \texttt{IN\_MODIFY},
+        \texttt{IN\_DELETE}, \texttt{IN\_MOVED\_TO}, \texttt{IN\_MOVED\_FROM},
+        \texttt{IN\_CLOSE\_WRITE}).
+    \end{itemize}
+\end{itemize}
+
+\subsection*{Fluxul de date}
+
+Thread-ul principal prime\c{s}te cererea TCP \^{i}n bucla \texttt{poll()} $\rightarrow$ pentru
+cererile de tip Dockerfile/LIST/DOWNLOAD/DELETE scrie un \texttt{WorkItem} \^{i}n pipe-ul anonim
+$\rightarrow$ thread-ul de procesare cite\c{s}te din pipe \c{s}i apeleaz\u{a}
+\texttt{process\_request\_and\_send()} sau handlerul corespunz\u{a}tor $\rightarrow$ pentru fiecare
+pachet se lanseaz\u{a} un thread dedicat (\texttt{dep\_thread\_fn}) care interogheaz\u{a} API-urile
+externe \c{s}i scrie rezultatul direct \^{i}n socket-ul clientului $\rightarrow$ thread-ul de
+procesare trimite markerul de finalizare \texttt{===EOF===}.
+
+Cererile de tip \texttt{UPLOAD} sunt tratate inline \^{i}n thread-ul I/O (streaming de date binare
+f\u{a}r\u{a} a stoca fi\c{s}ierul \^{i}n memorie).
+
+\begin{figure}[h]
+    \centering
+    \fbox{\parbox{0.85\textwidth}{\centering\vspace{2cm}[Diagrama de context]\vspace{2cm}}}
+    \caption{Diagrama de context}
+    \label{fig:context}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \fbox{\parbox{0.85\textwidth}{\centering\vspace{2cm}[Diagrama de arhitectur\u{a}]\vspace{2cm}}}
+    \caption{Diagrama de arhitectur\u{a}}
+    \label{fig:arch}
+\end{figure}
+
+% -------------------------------------------------------
+%  4. Design detaliat
+% -------------------------------------------------------
+\section{Design detaliat}
+
+\subsection{Modulul client (\texttt{client.c})}
+
+\subsubsection{Responsabilit\u{a}\c{t}i}
+
+Modulul ac\c{t}ioneaz\u{a} ca interfa\c{t}\u{a} direct\u{a} cu utilizatorul. Prelucreaz\u{a} comenzile
+introduse \^{i}n terminal, le formateaz\u{a} conform protocolului de re\c{t}ea stabilit \c{s}i expediaz\u{a}
+cererea c\u{a}tre server. Ulterior, intercepteaz\u{a} fluxul de date primit \c{s}i \^{i}l scrie pe discul
+local \^{i}ntr-un format valid de infrastructur\u{a}. Suport\u{a} opera\c{t}iunile de gestiune a
+fi\c{s}ierelor (upload, download, list, delete) pe acela\c{s}i socket TCP.
+
+\subsubsection{Interfe\c{t}e \c{s}i API-uri}
+
+Intr\u{a}rile sunt reprezentate de fluxul de caractere introdus de la tastatur\u{a} de c\u{a}tre
+utilizator \c{s}i de fluxul binar recep\c{t}ionat din re\c{t}ea prin socket-ul TCP. Ie\c{s}irile
+constau \^{i}n mesajele de status afi\c{s}ate pe consol\u{a} \c{s}i fi\c{s}ierul fizic generat la
+loca\c{t}ia specificat\u{a} (implicit \texttt{Dockerfile.gen}).
+
+Portul de conectare este citit din variabila de mediu \texttt{SERVER\_PORT} definit\u{a} \^{i}n
+fi\c{s}ierul \texttt{.env}; valoarea implicit\u{a} este \textbf{8080}.
+
+\subsubsection{Gestionarea erorilor}
+
+Aceast\u{a} component\u{a} este conceput\u{a} s\u{a} trateze erorile la nivel local pentru a nu
+supr\^{a}nc\u{a}rca inutil serverul cu trafic invalid. Dac\u{a} utilizatorul introduce o comand\u{a}
+goal\u{a} sau una care nu respect\u{a} sintaxa argumentelor, modulul filtreaz\u{a} cererea \c{s}i
+afi\c{s}eaz\u{a} imediat un ghid de utilizare, f\u{a}r\u{a} a ini\c{t}ia o nou\u{a} tranzac\c{t}ie
+TCP. La nivel de re\c{t}ea, \^{i}n cazul imposibilit\u{a}\c{t}ii cre\u{a}rii socket-ului sau al
+refuzului de conectare, clientul raporteaz\u{a} situa\c{t}ia \c{s}i se \^{i}nchide controlat.
+
+\subsubsection{Structuri de date}
+
+Componenta folose\c{s}te preponderent buffere de memorie prealocate (tablouri de caractere) pentru
+stocarea temporar\u{a} a comenzii ce urmeaz\u{a} a fi expediat\u{a} \c{s}i pentru acumularea
+pachetelor TCP primite de la server. Dimensiunile relevante: \texttt{MAX\_BUFFER\_SIZE = 1024},
+\texttt{MAX\_PATH\_SIZE = 256}.
+
+\subsubsection{Algoritmi \c{s}i logic\u{a}}
+
+Nucleul de procesare al textului utilizeaz\u{a} func\c{t}ia \texttt{strtok} pentru a sec\c{t}iona
+comanda ini\c{t}ial\u{a} \^{i}n func\c{t}ie de delimitatori. Pe m\u{a}sur\u{a} ce extrage argumentele,
+algoritmul le concateneaz\u{a} cu prefixele protocolului intern (\texttt{D:}, \texttt{E:},
+\texttt{C:}). Pentru mecanismul de sincronizare a salv\u{a}rii, o bucl\u{a} de recep\c{t}ie
+analizeaz\u{a} continuu datele intrate folosind \texttt{strstr} pentru a detecta markerul
+\texttt{===EOF===}, calculând exact pozi\c{t}ia de decupare a \c{s}irului pentru a exclude markerul
+din fi\c{s}ierul final.
+
+Pentru upload, clientul cite\c{s}te dimensiunea fi\c{s}ierului cu \texttt{stat()}, construie\c{s}te
+header-ul \texttt{UPLOAD:basename:size} \c{s}i streameaz\u{a} con\c{t}inutul \^{i}n buc\u{a}\c{t}i
+de 4096~bytes.
+
+\subsubsection{Managementul st\u{a}rii}
+
+Modulul opereaz\u{a} f\u{a}r\u{a} a men\c{t}ine o stare complex\u{a} \^{i}ntre gener\u{a}ri diferite.
+Odat\u{a} ce un document a fost scris \c{s}i markerul de final a fost recep\c{t}ionat cu succes,
+starea memoriei temporare este resetat\u{a}, permi\c{t}ând ini\c{t}ierea unei noi sesiuni de
+comand\u{a} \^{i}n aceea\c{s}i instan\c{t}\u{a} a programului.
+
+% ---
+\subsection{Modulul server (\texttt{server.c})}
+
+\subsubsection{Responsabilit\u{a}\c{t}i}
+
+Acest modul reprezint\u{a} creierul sistemului. Coordoneaz\u{a} conexiunile de re\c{t}ea de pe portul
+de ascultare TCP, cite\c{s}te propriet\u{a}\c{t}ile implicite din fi\c{s}ierul de configurare
+\texttt{demo.cfg} (prin \texttt{libconfig}), parseaz\u{a} comenzile primite \c{s}i orchestreaz\u{a}
+thread-urile care execut\u{a} interog\u{a}rile HTTP. \^{I}n final, asambleaz\u{a} toate
+componentele \c{s}i le trimite \^{i}napoi c\u{a}tre client.
+
+Serverul porne\c{s}te patru thread-uri de servicii la ini\c{t}ializare:
+
+\begin{itemize}
+    \item \textbf{\texttt{admin\_udp\_thread}} --- ascult\u{a} pe portul UDP 8081 \c{s}i gestioneaz\u{a}
+    sesiunea exclusiv\u{a} 1:1 a administratorului.
+    \item \textbf{\texttt{processing\_thread\_fn}} --- cite\c{s}te \texttt{WorkItem}-uri din pipe-ul
+    anonim \c{s}i apeleaz\u{a} logica de asamblare Dockerfile sau handlerii de fi\c{s}iere.
+    \item \textbf{\texttt{inotify\_thread\_fn}} --- monitorizeaz\u{a} directorul \texttt{uploads/}
+    \c{s}i \^{i}nregistreaz\u{a} \^{i}n log evenimentele de sistem de fi\c{s}iere.
+    \item \textbf{\texttt{stdin\_thread\_fn}} --- accept\u{a} comenzi interactive de la operatorul
+    local: \texttt{help}, \texttt{status}, \texttt{clients}, \texttt{shutdown}.
+\end{itemize}
+
+\subsubsection{Interfe\c{t}e \c{s}i API-uri}
+
+Intr\u{a}rile sistemului includ cererile TCP structurate venite de la client, r\u{a}spunsurile
+formatate JSON preluate de la API-urile externe Repology \c{s}i Homebrew, precum \c{s}i datele statice
+din fi\c{s}ierele locale \texttt{demo.cfg} \c{s}i \texttt{.env}. Ie\c{s}irea este exclusiv fluxul
+text al fi\c{s}ierului asamblat, scris secven\c{t}ial direct \^{i}n socket-ul de retur al clientului.
+
+\subsubsection{Gestionarea erorilor}
+
+Modulul server exceleaz\u{a} prin abordarea erorilor cu o filozofie de notificare \textit{in-band},
+axat\u{a} pe toleran\c{t}\u{a}. \^{I}n loc s\u{a} opreasc\u{a} brusc asamblarea dac\u{a} un API web
+returneaz\u{a} o eroare 404 (pachet inexistent) sau dac\u{a} interogarea dep\u{a}\c{s}e\c{s}te limita
+de timeout impus\u{a} prin \texttt{CURLOPT\_TIMEOUT} de 8~secunde, thread-ul de validare captureaz\u{a}
+elegant acest e\c{s}ec. El scrie \^{i}n socket un comentariu de avertizare
+(ex.\ \texttt{\# ESUAT: [pachet] (Lipseste de pe sursele verificate)}), permi\c{t}ând procesului
+principal s\u{a} continue generarea documentului pentru restul componentelor valide.
+
+Erorile de tip adres\u{a} blocat\u{a} sunt evitate prin configurarea socket-ului cu op\c{t}iunea
+\texttt{SO\_REUSEADDR}.
+
+\subsubsection{Structuri de date}
+
+\begin{itemize}
+    \item \textbf{\texttt{WorkItem}}: structur\u{a} transportat\u{a} prin pipe-ul anonim; con\c{t}ine
+    \texttt{client\_fd} (int), \texttt{data[1024]} (char) \c{s}i \texttt{data\_len} (ssize\_t).
+    \texttt{sizeof(WorkItem) < PIPE\_BUF}, garantând atomicitate.
+    \item \textbf{\texttt{CurlBuffer}}: buffer fix de 8192~bytes (\texttt{CURL\_BUFFER\_SIZE}) pentru
+    stocarea r\u{a}spunsurilor JSON primite prin HTTP; callback-ul \texttt{curl\_write\_buffer}
+    trunchiaz\u{a} inteligent dac\u{a} se dep\u{a}\c{s}e\c{s}te limita.
+    \item \textbf{\texttt{ClientInfo}}: stocheaz\u{a} fd-ul TCP \c{s}i adresa IP a fiec\u{a}rui
+    client; tablou static de \texttt{MAX\_CLIENTS = 64} intr\u{a}ri, protejat de
+    \texttt{g\_clients\_mutex}.
+    \item \textbf{Starea sesiunii admin}: \texttt{g\_current\_admin\_addr} (sockaddr\_in),
+    \texttt{g\_admin\_last\_activity} (time\_t), protejate de \texttt{g\_admin\_mutex}.
+    \item \textbf{\texttt{DepArgs}}: argumente pasate thread-ului per-pachet: numele pachetului
+    \c{s}i fd-ul clientului.
+\end{itemize}
+
+\subsubsection{Algoritmi \c{s}i logic\u{a}}
+
+Serverul implementeaz\u{a} multiplexarea I/O utilizând func\c{t}ia \texttt{poll()} cu timeout de
+500~ms, permi\c{t}ând gestionarea simultan\u{a} a mai multor descriptori de socket TCP f\u{a}r\u{a}
+a bloca execu\c{t}ia.
+
+Pentru validarea dependen\c{t}elor, se utilizeaz\u{a} un model paralel bazat pe thread-uri: pentru
+fiecare pachet \texttt{D:} se creeaz\u{a} un thread dedicat (\texttt{dep\_thread\_fn}) care
+interogheaz\u{a} mai \^{i}nt\^{a}i Repology, iar \^{i}n caz de e\c{s}ec, Homebrew. \^{I}ntre
+interog\u{a}ri consecutive Repology se introduce o pauz\u{a} de 1~secund\u{a}
+(\texttt{REPOLOGY\_DELAY}) pentru evitarea rate-limiting-ului (HTTP 429).
+
+Un algoritm critic implementat manual este func\c{t}ia \texttt{extract\_json\_string}, care
+analizeaz\u{a} semantic buffer-ul pentru a identifica cheia \texttt{"version"} (Repology) sau
+\texttt{"stable"} (Homebrew), eliminând necesitatea integr\u{a}rii unor parsere externe.
+
+Mecanismul de sesiune exclusiv\u{a} al administratorului func\c{t}ioneaz\u{a} astfel: la primirea
+unui pachet UDP, thread-ul admin verific\u{a} sub mutex dac\u{a} sesiunea a expirat
+(\texttt{>~60~secunde}) sau dac\u{a} expeditorul coincide cu sesiunea activ\u{a}. Dac\u{a} da,
+actualizeaz\u{a} \texttt{g\_admin\_last\_activity}; altfel, returneaz\u{a} mesaj de eroare
+f\u{a}r\u{a} a procesa comanda.
+
+\subsubsection{Managementul st\u{a}rii}
+
+Serverul este proiectat s\u{a} fie independent de stare \^{i}ntre cererile diferi\c{t}ilor clien\c{t}i.
+Starea global\u{a} (lista de clien\c{t}i, sesiunea admin, \texttt{g\_running}) este protejat\u{a}
+exclusiv prin mutex-uri. Variabila \texttt{g\_running} este de tip \texttt{volatile sig\_atomic\_t}
+\c{s}i este setat\u{a} pe 0 de handlerul de semnal (\texttt{SIGINT}/\texttt{SIGTERM}) sau de comanda
+\texttt{shutdown} din consola local\u{a}.
+
+% ---
+\subsection{Modulul Admin (\texttt{admin.c})}
+
+\subsubsection{Responsabilit\u{a}\c{t}i}
+
+Interogarea serverului pentru ob\c{t}inerea raportului de status, listarea clien\c{t}ilor
+conecta\c{t}i, eliminarea unui client (kick), deconectarea sesiunii de administrare \c{s}i
+cur\u{a}\c{t}area directorului \texttt{uploads/}.
+
+\subsubsection{Interfe\c{t}e \c{s}i API-uri}
+
+Utilizeaz\u{a} \texttt{ncurses} (\texttt{initscr}, \texttt{cbreak}, \texttt{noecho},
+\texttt{keypad}) pentru a desena meniuri interactive navigabile cu s\u{a}ge\c{t}ile tastaturii.
+Comunicarea se face prin socket-uri UDP pe portul 8081 via func\c{t}ia \texttt{send\_command\_to\_server()}.
+
+Meniul expune \textbf{7 op\c{t}iuni}:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Op\c{t}iune} & \textbf{Comand\u{a} UDP} & \textbf{Descriere} \\
+\midrule
+1 & \texttt{CMD:STATUS}  & Raport status server (port, clien\c{t}i, uptime) \\
+2 & \texttt{CMD:CLIENTS} & Lista clien\c{t}ilor TCP conecta\c{t}i \\
+3 & \texttt{CMD:KICK}    & Elimin\u{a} primul client TCP activ \\
+4 & \texttt{CMD:LOGOUT}  & Elibereaz\u{a} sesiunea de admin \c{s}i \^{i}nchide panoul \\
+5 & \texttt{CMD:VERSION} & Versiunea serverului \\
+6 & \texttt{CMD:CLEAN}   & \c{S}terge toate fi\c{s}ierele din \texttt{uploads/} \\
+7 & \texttt{CMD:PING}    & Test de conectivitate \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Gestionarea erorilor}
+
+Implementeaz\u{a} un mecanism de timeout de 2~secunde (\texttt{SO\_RCVTIMEO}) pentru a preveni
+blocarea interfe\c{t}ei \^{i}n cazul \^{i}n care serverul nu r\u{a}spunde. \^{I}n caz de timeout,
+buffer-ul de r\u{a}spuns este populat cu mesajul \textit{``Eroare: Serverul nu a r\u{a}spuns sau
+este offline''}, afi\c{s}at direct \^{i}n panoul TUI.
+
+\subsubsection{Structuri de date}
+
+Utilizeaz\u{a} un buffer static \texttt{response\_buffer[2048]} pentru stocarea r\u{a}spunsului
+curent de la server \c{s}i un tablou de pointeri la \c{s}iruri de caractere (\texttt{options[7]})
+pentru op\c{t}iunile meniului. Starea nav\u{a}rii este men\c{t}inut\u{a} printr-o variabil\u{a}
+\texttt{choice} (int) \c{s}i un flag \texttt{running} (int).
+
+\subsubsection{Algoritmi \c{s}i logic\u{a}}
+
+Bucla principal\u{a} redeseneaz\u{a} ecranul la fiecare apel \texttt{getch()}, aplicând atributul
+\texttt{A\_REVERSE} pe op\c{t}iunea curent\u{a} pentru eviden\c{t}ierea selec\c{t}iei. Afi\c{s}area
+r\u{a}spunsului se face caracter cu caracter, cu gestionarea manual\u{a} a \textit{word-wrap}-ului
+la \texttt{MAX\_LINE\_WIDTH = 78} coloane \c{s}i interpretarea caracterelor \texttt{'\textbackslash n'}
+pentru salt de linie.
+
+% -------------------------------------------------------
+%  5. Interfete externe
+% -------------------------------------------------------
+\section{Interfe\c{t}e externe}
+
+\subsection{Interfata utilizator}
+
+Sistemul nu dispune de o interfa\c{t}\u{a} grafic\u{a} tradi\c{t}ional\u{a}, ci expune o interfa\c{t}\u{a}
+\^{i}n linie de comand\u{a} strict\u{a}, optimizat\u{a} pentru ingineri software \c{s}i procese
+automatizate. Promptul interactiv \texttt{comanda:>} indic\u{a} momentul \^{i}n care aplica\c{t}ia
+este preg\u{a}tit\u{a} s\u{a} primeasc\u{a} o nou\u{a} serie de argumente.
+
+Argumentele acceptate de client sunt prezentate \^{i}n tabelul urm\u{a}tor:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Argument} & \textbf{Descriere} \\
+\midrule
+\texttt{--dep <pachet>}    & Adaug\u{a} o dependen\c{t}\u{a} de validat \c{s}i instalat \\
+\texttt{--env <KEY=VAL>}   & Adaug\u{a} o variabil\u{a} de mediu \^{i}n container \\
+\texttt{--copy <src dst>}  & Specific\u{a} un fi\c{s}ier de copiat \^{i}n container \\
+\texttt{--out <fisier>}    & Suprascriere nume implicit al fi\c{s}ierului generat \\
+\texttt{--upload <cale>}   & \^{I}ncarc\u{a} un fi\c{s}ier local pe server \\
+\texttt{--get <nume>}      & Desc\u{a}rc\u{a} un fi\c{s}ier de pe server \\
+\texttt{--list}            & Afi\c{s}eaz\u{a} fi\c{s}ierele din \texttt{uploads/} al serverului \\
+\texttt{--delete <nume>}   & \c{S}terge un fi\c{s}ier de pe server \\
+\texttt{exit}              & \^{I}nchide clientul \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Pe l\^{a}ng\u{a} CLI-ul clientului, sistemul expune o interfa\c{t}\u{a} semi-grafic\u{a} (TUI) pentru
+modulul de administrare, oferind meniuri navigabile din s\u{a}ge\c{t}ile tastaturii \c{s}i delimit\u{a}ri
+clare pe ecran pentru afi\c{s}area r\u{a}spunsurilor.
+
+\subsection{API-uri externe}
+
+Pentru a garanta acurate\c{t}ea versiunilor software incluse \^{i}n documentul generat, aplica\c{t}ia
+depinde de interogarea \^{i}n timp real a dou\u{a} platforme web distincte.
+
+\begin{itemize}
+    \item \textbf{Repology API (v1) --- surs\u{a} primar\u{a}:} Serverul trimite un request GET la
+    \texttt{https://repology.org/api/v1/project/<pachet>} \c{s}i extrage câmpul \texttt{"version"}
+    din r\u{a}spunsul JSON. Dac\u{a} array-ul returnat este gol (\texttt{[]}) sau http code-ul nu
+    este 200, se trece la fallback.
+
+    \item \textbf{Homebrew API --- surs\u{a} secundar\u{a} (fallback):} Serverul trimite un request GET
+    la \texttt{https://formulae.brew.sh/api/formula/<pachet>.json} \c{s}i extrage câmpul
+    \texttt{"stable"} din sec\c{t}iunea \texttt{"versions"}.
+\end{itemize}
+
+Ambele interac\c{t}iuni sunt intermediate de \texttt{libcurl} cu header
+\texttt{User-Agent: DockerGen/1.0} \c{s}i timeout de 8~secunde (\texttt{CURLOPT\_TIMEOUT}).
+Buffer-ul de r\u{a}spuns este limitat la \texttt{CURL\_BUFFER\_SIZE = 8192~bytes} pentru a preveni
+dep\u{a}\c{s}irile de memorie.
+
+\subsection{Protocoale de re\c{t}ea \c{s}i comunicare}
+
+Sistemul utilizeaz\u{a} un model de comunicare dual-protocol:
+
+\begin{enumerate}
+    \item \textbf{TCP (portul 8080):} Utilizat pentru transferul sigur \c{s}i ordonat al fluxului
+    de date Dockerfile \^{i}ntre client \c{s}i server. Prefixele de protocol sunt:
+
+    \begin{center}
+    \begin{tabular}{lll}
+    \toprule
+    \textbf{Prefix} & \textbf{Tip} & \textbf{Descriere} \\
+    \midrule
+    \texttt{D:}                   & dependen\c{t}\u{a}        & Pachet de validat \c{s}i instalat \\
+    \texttt{E:}                   & variabil\u{a} de mediu    & Pereche \texttt{cheie=valoare} \\
+    \texttt{C:}                   & fi\c{s}ier de copiat       & Cale surs\u{a} + destina\c{t}ie \\
+    \texttt{UPLOAD:basename:size} & upload                    & Header urmat de date binare \\
+    \texttt{DOWNLOAD:basename}    & download                  & Cerere fi\c{s}ier de pe server \\
+    \texttt{LIST}                 & listare                   & Cerere list\u{a} fi\c{s}iere \\
+    \texttt{DELETE:basename}      & \c{s}tergere               & Cerere \c{s}tergere fi\c{s}ier \\
+    \bottomrule
+    \end{tabular}
+    \end{center}
+
+    Finalul oric\u{a}rui r\u{a}spuns de la server este marcat cu \texttt{===EOF===}.
+
+    \item \textbf{UDP (portul 8081):} Utilizat pentru mesaje scurte de control \c{s}i monitorizare
+    \^{i}ntre admin \c{s}i server: \texttt{CMD:STATUS}, \texttt{CMD:CLIENTS}, \texttt{CMD:KICK},
+    \texttt{CMD:LOGOUT}, \texttt{CMD:VERSION}, \texttt{CMD:PING}, \texttt{CMD:CLEAN}.
+\end{enumerate}
+
+La nivel extern, comunicarea dintre procesele serverului \c{s}i platformele de validare se
+realizeaz\u{a} exclusiv prin protocolul securizat HTTPS peste portul 443.
+
+% -------------------------------------------------------
+%  6. Cerinte non-functionale
+% -------------------------------------------------------
+\section{Cerin\c{t}e non-func\c{t}ionale relevante pentru design}
+
+\subsection{Performan\c{t}\u{a}}
+
+Bucla de acceptare a conexiunilor TCP utilizeaz\u{a} \texttt{poll()} cu timeout de 500~ms pentru a
+r\u{a}m\^{a}ne receptiv\u{a} la semnalele de oprire. \^{I}ntre interog\u{a}rile Repology
+consecutive se introduce o pauz\u{a} de 1~secund\u{a} (\texttt{REPOLOGY\_DELAY}) pentru evitarea
+rate-limiting-ului (HTTP 429). Timeout-ul maxim per interogare extern\u{a} este de 8~secunde.
+
+\subsection{Securitate}
+
+Toate numele de fi\c{s}iere primite prin comenzile \texttt{UPLOAD}, \texttt{DOWNLOAD} \c{s}i
+\texttt{DELETE} sunt validate pentru a preveni atacuri de tip path traversal: se resping secven\c{t}ele
+\texttt{..}, \texttt{/} \c{s}i \texttt{\textbackslash}. Buffer-ul curl este limitat la
+\texttt{CURL\_BUFFER\_SIZE = 8192~bytes} pentru a preveni dep\u{a}\c{s}irile de memorie.
+
+\subsection{Configurabilitate}
+
+Comportamentul de baz\u{a} al sistemului (imaginea Docker, maintainer, workdir) poate fi modificat
+exclusiv prin alterarea fi\c{s}ierului \texttt{demo.cfg}, f\u{a}r\u{a} recompilare. Portul TCP de
+ascultare este configurat prin variabila \texttt{SERVER\_PORT} din \texttt{.env}.
+
+\subsection{Jurnalizare}
+
+Sistemul de jurnalizare thread-safe (\texttt{server\_log}) scrie simultan pe \texttt{stdout} \c{s}i
+\^{i}n fi\c{s}ierul \texttt{server.log} cu trei niveluri de severitate: \texttt{LOG\_INFO},
+\texttt{LOG\_WARN}, \texttt{LOG\_ERROR}. Accesul la fi\c{s}ierul de log \c{s}i la
+\texttt{stdout} este protejat de \texttt{g\_log\_mutex}.
+
+\end{document}

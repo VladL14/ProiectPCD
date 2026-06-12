@@ -68,7 +68,14 @@ int main() {
         port = (int)strtol(env_port, NULL, 10);
     }
 
-    // Cream un socket 
+    // citim ip-ul serverului din .env (default localhost)
+    const char *server_ip = "127.0.0.1";
+    char *env_host = getenv("SERVER_HOST");
+    if (env_host != NULL) {
+        server_ip = env_host;
+    }
+
+    // Cream un socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("Eroare la creare socket");
@@ -79,7 +86,7 @@ int main() {
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET; // adresa ipv4
     server_addr.sin_port = htons((uint16_t)port); // setam portul 8080 si se converteste cu htons in format de retea
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ne conectam la ocalhost
+    server_addr.sin_addr.s_addr = inet_addr(server_ip); // ip citit din .env
     for (int i = 0; i < 8; i++) server_addr.sin_zero[i] = '\0'; // Curatam restul structurii
 
     // Incercam sa stabilim conexiunea cu serverul
