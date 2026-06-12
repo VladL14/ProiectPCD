@@ -40,6 +40,7 @@
 #define MAX_BUFFER_SIZE 2048
 #define POLL_TIMEOUT 500
 #define REPOLOGY_DELAY 1
+#define ADMIN_TIMEOUT_SEC 60
 
 
 static size_t custom_len(const char *str) {
@@ -125,6 +126,12 @@ typedef struct {
 static ClientInfo      g_clients[MAX_CLIENTS];
 static int             g_client_count = 0;
 static pthread_mutex_t g_clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Starea sesiunii de administrare (protejata de un mutex dedicat)
+static struct sockaddr_in g_current_admin_addr;
+static time_t             g_admin_last_activity = 0;
+static pthread_mutex_t    g_admin_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static int             g_tcp_port   = 8080;
 static time_t          g_start_time = 0;
 volatile sig_atomic_t  g_running    = 1; // setat pe 0 de SIGINT/SIGTERM sau comanda shutdown
@@ -627,81 +634,146 @@ static void *admin_udp_thread(void *arg) {
     if (udp_fd < 0) { perror("UDP admin socket"); return NULL; }
 
     int opt = 1;
-    setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, (socklen_t)sizeof(opt)) < 0) {
+        perror("setsockopt admin");
+    }
 
-    struct sockaddr_in udp_addr;
+    struct sockaddr_in udp_addr = {0};
     udp_addr.sin_family      = AF_INET;
     udp_addr.sin_addr.s_addr = INADDR_ANY;
     udp_addr.sin_port        = htons(ADMIN_PORT);
 
-    if (bind(udp_fd, (struct sockaddr *)&udp_addr, sizeof(udp_addr)) < 0) {
+    if (bind(udp_fd, (struct sockaddr *)&udp_addr, (socklen_t)sizeof(udp_addr)) < 0) {
         perror("UDP admin bind");
         close(udp_fd);
         return NULL;
     }
 
-    char cmd[MAX_PATH_SIZE];
-    char resp[MAX_BUFFER_SIZE];
-    struct sockaddr_in admin_addr;
-    socklen_t admin_len;
+    // Initializare garantata pentru a satisface clang-analyzer
+    char cmd[256] = {0};
+    char resp[2048] = {0};
+    struct sockaddr_in admin_addr = {0};
+    socklen_t admin_len = 0;
 
     while (1) {
-        admin_len = sizeof(admin_addr);
-        int nb = (int)recvfrom(udp_fd, cmd, sizeof(cmd) - 1, 0,
-                               (struct sockaddr *)&admin_addr, &admin_len);
-        if (nb <= 0) continue;
+        admin_len = (socklen_t)sizeof(admin_addr);
+        ssize_t nb_raw = recvfrom(udp_fd, cmd, sizeof(cmd) - 1, 0,
+                                  (struct sockaddr *)&admin_addr, &admin_len);
+        if (nb_raw <= 0) continue;
+        
+        // Cast explicit pentru evitarea narrowing conversions
+        size_t nb = (size_t)nb_raw;
         cmd[nb] = '\0';
         resp[0] = '\0';
 
-        char *cmd_log = cmd;
-        if (strncmp(cmd, "CMD:", 4) == 0) cmd_log += 4;
-        char msg_cmd[MAX_LOG_SIZE]; custom_strcpy(msg_cmd, "[Admin] Comanda primita: "); custom_concat(msg_cmd, cmd_log);
-        server_log(LOG_INFO, msg_cmd);
+        time_t now = time(NULL);
+        int is_authorized = 0;
 
+        // Logica 1:1 - Verificare si validare sesiune admin
+        pthread_mutex_lock(&g_admin_mutex);
+        if (g_admin_last_activity == 0 || (now - g_admin_last_activity) > ADMIN_TIMEOUT_SEC) {
+            // Sesiune libera sau expirata -> preluam noul admin
+            g_current_admin_addr = admin_addr;
+            g_admin_last_activity = now;
+            is_authorized = 1;
+            server_log(LOG_INFO, "[Admin] Sesiune noua de administrare preluata.");
+        } else {
+            // Sesiune activa -> verificam daca expeditorul este adminul curent
+            if (g_current_admin_addr.sin_addr.s_addr == admin_addr.sin_addr.s_addr &&
+                g_current_admin_addr.sin_port == admin_addr.sin_port) {
+                g_admin_last_activity = now;
+                is_authorized = 1;
+            }
+        }
+        pthread_mutex_unlock(&g_admin_mutex);
+
+        // Respingere pachet daca nu este autorizat
+        if (!is_authorized) {
+            const char *err_msg = "EROARE: Serverul este deja administrat de altcineva. Reincercati mai tarziu.";
+            sendto(udp_fd, err_msg, custom_len(err_msg), 0,
+                   (struct sockaddr *)&admin_addr, admin_len);
+            server_log(LOG_WARN, "[Admin] Tentativa de acces respinsa (sesiune ocupata).");
+            continue;
+        }
+
+        // Pregatim mesajul pentru log folosind functiile custom
+        char log_buf[512] = {0};
+        custom_strcpy(log_buf, "[Admin] Comanda primita: ");
+        custom_concat(log_buf, cmd);
+        
+        server_log(LOG_INFO, log_buf);
+
+        // Procesare comenzi admin
         if (strcmp(cmd, "CMD:STATUS") == 0) {
-            time_t now    = time(NULL);
-            long   uptime = (long)(now - g_start_time);
+            time_t current_time = time(NULL);
+            long   uptime = (long)(current_time - g_start_time);
             pthread_mutex_lock(&g_clients_mutex);
             int cnt = g_client_count;
             pthread_mutex_unlock(&g_clients_mutex);
-            char t1[32], t2[32], t3[32]; custom_itoa(g_tcp_port, t1); custom_itoa(cnt, t2); custom_itoa(uptime, t3);
-            custom_strcpy(resp, "Status: ONLINE\\nPort TCP: "); custom_concat(resp, t1);
-            custom_concat(resp, "\\nClienti conectati: "); custom_concat(resp, t2);
-            custom_concat(resp, "\\nUptime: "); custom_concat(resp, t3); custom_concat(resp, " secunde");
+            
+            int n = snprintf(resp, sizeof(resp),
+                "Status: ONLINE\nPort TCP: %d\nClienti conectati: %d\nUptime: %ld secunde",
+                g_tcp_port, cnt, uptime);
+            if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
+            
         } else if (strcmp(cmd, "CMD:CLIENTS") == 0) {
             pthread_mutex_lock(&g_clients_mutex);
             int cnt = g_client_count;
-            char tc[32]; custom_itoa(cnt, tc); custom_strcpy(resp, "Clienti conectati: "); custom_concat(resp, tc); custom_concat(resp, "\n");
-            for (int i = 0; i < cnt; i++) {
-                char ti1[32], ti2[32]; custom_itoa(i + 1, ti1); custom_itoa(g_clients[i].fd, ti2);
-                custom_concat(resp, ti1); custom_concat(resp, ". "); custom_concat(resp, g_clients[i].ip); custom_concat(resp, " (fd="); custom_concat(resp, ti2); custom_concat(resp, ")\\n");
+            int pos = snprintf(resp, sizeof(resp), "Clienti conectati: %d\n", cnt);
+            if (pos < 0) pos = 0;
+            
+            for (int i = 0; i < cnt && pos < (int)sizeof(resp) - 1; i++) {
+                int written = snprintf(resp + pos, sizeof(resp) - (size_t)pos,
+                    "%d. %s (fd=%d)\n", i + 1, g_clients[i].ip, g_clients[i].fd);
+                if (written > 0) pos += written;
             }
             pthread_mutex_unlock(&g_clients_mutex);
+            if (pos >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
+            
         } else if (strcmp(cmd, "CMD:KICK") == 0) {
             pthread_mutex_lock(&g_clients_mutex);
             if (g_client_count == 0) {
-                custom_strcpy(resp, "EROARE: Nu exista clienti conectati");
+                int n = snprintf(resp, sizeof(resp), "EROARE: Nu exista clienti conectati");
+                if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
                 pthread_mutex_unlock(&g_clients_mutex);
             } else {
                 int  kick_fd = g_clients[0].fd;
-                char kick_ip[INET_ADDRSTRLEN];
+                char kick_ip[INET_ADDRSTRLEN] = {0};
                 int  ki = 0;
                 while (g_clients[0].ip[ki] && ki < INET_ADDRSTRLEN - 1) {
                     kick_ip[ki] = g_clients[0].ip[ki]; ki++;
                 }
                 kick_ip[ki] = '\0';
-                for (int j = 0; j < g_client_count - 1; j++) g_clients[j] = g_clients[j + 1];
+                for (int j = 0; j < g_client_count - 1; j++) {
+                    g_clients[j] = g_clients[j + 1];
+                }
                 g_client_count--;
                 pthread_mutex_unlock(&g_clients_mutex);
                 close(kick_fd);
-                char tk[32]; custom_itoa(kick_fd, tk); custom_strcpy(resp, "OK: Client "); custom_concat(resp, kick_ip); custom_concat(resp, " (fd="); custom_concat(resp, tk); custom_concat(resp, ") deconectat");
+                int n = snprintf(resp, sizeof(resp), "OK: Client %s (fd=%d) deconectat", kick_ip, kick_fd);
+                if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
             }
+            
         } else if (strcmp(cmd, "CMD:LOGOUT") == 0) {
-            custom_strcpy(resp, "OK: Admin deconectat");
+            // Eliberam sesiunea manual
+            pthread_mutex_lock(&g_admin_mutex);
+            g_admin_last_activity = 0;
+            g_current_admin_addr.sin_family = 0;
+            g_current_admin_addr.sin_port = 0;
+            g_current_admin_addr.sin_addr.s_addr = 0;
+            pthread_mutex_unlock(&g_admin_mutex);
+            
+            int n = snprintf(resp, sizeof(resp), "OK: Admin deconectat");
+            if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
+            
         } else if (strcmp(cmd, "CMD:VERSION") == 0) {
-            custom_strcpy(resp, "Versiune Server: DockerGen v1.0\nStatus: Activ");
+            int n = snprintf(resp, sizeof(resp), "Versiune Server: DockerGen v1.0\nStatus: Activ");
+            if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
+            
         } else if (strcmp(cmd, "CMD:PING") == 0) {
-            custom_strcpy(resp, "PONG! Serverul functioneaza normal.");
+            int n = snprintf(resp, sizeof(resp), "PONG! Serverul functioneaza normal.");
+            if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
+            
         } else if (strcmp(cmd, "CMD:CLEAN") == 0) {
             DIR *dir = opendir("uploads");
             if (dir) {
@@ -709,23 +781,32 @@ static void *admin_udp_thread(void *arg) {
                 int count = 0;
                 while ((en = readdir(dir)) != NULL) {
                     if (en->d_name[0] != '.') {
-                        char p[300];
-                        custom_strcpy(p, "uploads/"); custom_concat(p, en->d_name);
-                        unlink(p);
-                        count++;
+                        char p[300] = {0};
+                        int written = snprintf(p, sizeof(p), "uploads/%s", en->d_name);
+                        if (written > 0 && written < (int)sizeof(p)) {
+                            unlink(p);
+                            count++;
+                        }
                     }
                 }
                 closedir(dir);
-                char td[32]; custom_itoa(count, td); custom_strcpy(resp, "OK: "); custom_concat(resp, td); custom_concat(resp, " fisiere sterse din uploads/");
+                int n = snprintf(resp, sizeof(resp), "OK: %d fisiere sterse din uploads/", count);
+                if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
             } else {
-                custom_strcpy(resp, "EROARE: Nu pot deschide directorul uploads/");
+                int n = snprintf(resp, sizeof(resp), "EROARE: Nu pot deschide directorul uploads/");
+                if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
             }
         } else {
-            custom_strcpy(resp, "EROARE: Comanda necunoscuta: "); custom_concat(resp, cmd);
+            int n = snprintf(resp, sizeof(resp), "EROARE: Comanda necunoscuta: %s", cmd);
+            if (n < 0 || n >= (int)sizeof(resp)) resp[sizeof(resp) - 1] = '\0';
         }
 
-        sendto(udp_fd, resp, custom_len(resp), 0,
-               (struct sockaddr *)&admin_addr, admin_len);
+        // Trimitere raspuns catre clientul care a cerut
+        ssize_t sent = sendto(udp_fd, resp, custom_len(resp), 0,
+                              (struct sockaddr *)&admin_addr, admin_len);
+        if (sent < 0) {
+            perror("sendto admin response");
+        }
     }
 
     close(udp_fd);
